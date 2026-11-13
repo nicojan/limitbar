@@ -197,5 +197,26 @@ check(upd(5 * 60) == "Updated 5 min ago", "updated: minutes")
 check(upd(2 * 3600 + 100) == "Updated 2 h ago", "updated: hours")
 check(upd(30 * 3600) == "Updated Wed 9:52 PM", "updated: over a day shows weekday: \(upd(30 * 3600))")
 
+// MARK: phase 4 (UX)
+// Dim the bar when the numbers may be out of date, instead of a cryptic " !".
+check(!barDimmed(fetchedAt: now.addingTimeInterval(-60), now: now, failing: false), "fresh data: bright")
+check(barDimmed(fetchedAt: now.addingTimeInterval(-11 * 60), now: now, failing: false), "over 10 min old: dimmed")
+check(barDimmed(fetchedAt: now.addingTimeInterval(-60), now: now, failing: true), "last fetch failed: dimmed")
+check(barDimmed(fetchedAt: .distantPast, now: now, failing: false), "never loaded: dimmed")
+
+// Firewall hint after 3 consecutive timeouts; any other result resets the count.
+let to1 = nextState(polled, after: .offline(timedOut: true))
+let to3 = nextState(nextState(to1, after: .offline(timedOut: true)), after: .offline(timedOut: true))
+check(to1.timeouts == 1 && to3.timeouts == 3, "timeouts counted")
+check(nextState(to3, after: .offline(timedOut: false)).timeouts == 0, "a non-timeout offline error resets the count")
+check(nextState(to3, after: .success).timeouts == 0, "success resets the count")
+check(status("Offline (The request timed out.)", poll: to1).text == "Offline (The request timed out.)", "one timeout: plain message")
+check(status("Offline (The request timed out.)", poll: to3).text == firewallHint, "three timeouts: firewall hint")
+check(firewallHint.contains("api.anthropic.com") && firewallHint.contains("Little Snitch"), "hint names host and filter")
+
+// An expired login is routine overnight: calm, not a warning.
+check(status(loginExpiredMessage, poll: polled).calm, "expired login is calm")
+check(!status("Usage service unavailable (500)", poll: polled).calm, "server error is a warning")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

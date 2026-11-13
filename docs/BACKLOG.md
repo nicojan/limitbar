@@ -8,13 +8,6 @@ From a code review on 2026-11-12 (independent bug hunt plus a UX/feature pass) a
 
 2. **Deny may not pause polling** (`keychainData` in `Core.swift`). Only exit 128 (`errSecUserCanceled`) maps to `.accessDenied`; a refused access-list read is plausibly `errSecAuthFailed` (-25293, exit 51), which would fall into the generic failure and re-prompt every 5 min. **Waiting on one measurement:** which code `security` returns when Deny is clicked. Measured on 2026-11-12: no answer → `security` blocks until killed (now handled by the 15 s deadline, which pauses polling); item not found → 44. The Deny click itself couldn't be automated (no assistive access) and two attempts were answered with Allow. Run the throwaway-keychain probe (`security find-generic-password` on an item that trusts only `/usr/bin/true`, click Deny), then map that code to `.accessDenied` with a test.
 
-## UX
-
-- **Stale data: dim instead of `!`.** Dim the bar text (orange at reduced alpha) when the data is over ~10 min old or the last fetch failed; drop the cryptic ` !`. The menu says why.
-- **Expired login is normal, not an error.** Overnight expiry is routine; show it calmly (dimmed bar, neutral menu line), not as a warning.
-- **Firewall hint.** After 3 consecutive timeouts, the menu says "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar". (Little Snitch silently drops new ad-hoc builds on Nico's Mac.)
-- **Bar colour on an inactive display and with the menu open** (was bug 12). The explicit orange may stop the title dimming on an inactive display's menu bar; check it still dims, or dim it explicitly, and that it stays readable when the menu is open, in light and dark mode.
-
 ## Features, by value for the effort
 
 1. **Pace indicator.** Used % against elapsed % of the window, shown in the menu (and optionally a small ↑ in the bar when ahead of pace): "52% used, 30% of window elapsed — ahead of pace, runs out ~21:40". Window lengths: session 5 h, weekly 7 d; elapsed = window − time to reset. Pure logic in `Core.swift`, fully testable. The API's `pace` field is null today; prefer it when present.

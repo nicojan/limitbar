@@ -160,6 +160,7 @@ struct PollState: Equatable {
     var paused = false   // Keychain access was refused: wait for a manual Refresh instead of re-prompting
     var offlineFailures = 0   // consecutive offline failures; the first few retry quickly
     var holdUntil: Date?      // after wake: the timer waits for the network to come back
+    var timeouts = 0          // consecutive timeouts: a firewall silently dropping requests looks like this
 
     var backingOff: Bool { interval > Poll.base }
     /// The quick retry delay in force, or nil when the normal interval applies.
@@ -193,15 +194,38 @@ enum Outcome: Equatable { case success, rateLimited(retryAfter: TimeInterval?), 
 func nextState(_ s: PollState, after o: Outcome) -> PollState {
     var n = s   // a copy; the caller's state is untouched
     switch o {
-    case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0
+    case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0; n.timeouts = 0
     case .rateLimited(let after):
         let doubled = min(s.interval * 2, Poll.maxBackoff)
         n.interval = max(doubled, min(after ?? 0, Poll.maxRetryAfter)); n.paused = false; n.offlineFailures = 0
     case .accessDenied: n.paused = true
-    case .offline: n.offlineFailures = min(s.offlineFailures + 1, Poll.retryDelays.count + 1)
-    case .failure: n.offlineFailures = 0
+    case .offline(let timedOut):
+        n.offlineFailures = min(s.offlineFailures + 1, Poll.retryDelays.count + 1)
+        n.timeouts = timedOut ? s.timeouts + 1 : 0
+    case .failure: n.offlineFailures = 0; n.timeouts = 0
     }
+    if case .rateLimited = o { n.timeouts = 0 }
+    if case .accessDenied = o { n.timeouts = 0 }
     return n
+}
+
+// MARK: - status
+
+let loginExpiredMessage = "Login expired — run Claude Code to renew"
+let firewallHint = "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar"
+let timeoutsBeforeHint = 3
+let dimAfter: TimeInterval = 600   // numbers older than 10 min are shown dimmed
+
+/// What the menu and tooltip say about the last failure. `calm` is for the routine case (the login expires
+/// overnight): a neutral line instead of a warning.
+func status(_ message: String, poll: PollState) -> (text: String, calm: Bool) {
+    if poll.timeouts >= timeoutsBeforeHint { return (firewallHint, false) }
+    return (message, message == loginExpiredMessage)
+}
+
+/// The bar dims when its numbers may be out of date: never loaded, over 10 minutes old, or the last fetch failed.
+func barDimmed(fetchedAt: Date, now: Date, failing: Bool) -> Bool {
+    failing || now.timeIntervalSince(fetchedAt) > dimAfter
 }
 
 // MARK: - Keychain read via a child process

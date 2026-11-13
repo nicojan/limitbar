@@ -6,7 +6,7 @@ Your Claude session and weekly limits, always visible in the macOS menu bar.
 52% · 34%
 ```
 
-The first number is your 5-hour session limit, the second your weekly limit, in Claude orange. A number turns red at 90% or when Claude flags the limit.
+The first number is your 5-hour session limit, the second your weekly limit, in Claude orange. A number turns red at 90% or when Claude flags the limit. The numbers dim when they may be out of date (over 10 minutes old, or the last update failed); the menu says why.
 
 **Hover** for when they reset:
 
@@ -37,7 +37,7 @@ cd limitbar
 
 This builds `~/Applications/Limitbar.app` and opens it. Click it and turn on **Start at Login**.
 
-If you run a network filter such as Little Snitch or LuLu, allow **Limitbar** to connect to `api.anthropic.com` on port 443. Some filters silently drop new, self-built apps, which shows up as "Offline (The request timed out.)" in the menu.
+If you run a network filter such as Little Snitch or LuLu, allow **Limitbar** to connect to `api.anthropic.com` on port 443. Some filters silently drop new, self-built apps, which shows up as "Offline (The request timed out.)" in the menu, and after three timeouts in a row as "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar".
 
 To update: `git pull && ./build.sh`. A failed build leaves the installed copy untouched.
 
@@ -58,7 +58,7 @@ It fetches at launch, every 5 minutes, when you open the menu or wake the Mac if
 ## Limits of the approach
 
 - **The endpoint is undocumented.** Anthropic can change or remove it at any time; if the reply stops making sense the menu says so and the bar shows `—`.
-- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers with a `!` and "Login expired — run Claude Code to renew" (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch.
+- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch.
 - **It only knows what the endpoint reports**: no token counts, history or forecasts. For those, see [CodexBar](https://github.com/steipete/CodexBar) or the upstream project below.
 
 ## Privacy

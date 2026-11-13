@@ -13,9 +13,16 @@ enum Config {
     static let tick: TimeInterval = 60      // re-render countdowns, check whether a fetch is due
     static let timeout: TimeInterval = 10
     static let keychainDeadline: TimeInterval = 15
+    static let dimAlpha: CGFloat = 0.5       // bar text when its numbers may be out of date
     static let stuckAfter: TimeInterval = 60  // an outstanding fetch older than this no longer blocks new ones
     static let wakeDelay: TimeInterval = 5  // let the network come back after sleep
-    static let orange = NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: 1)  // Claude orange #D97757
+    /// Claude orange #D97757 on a dark menu bar (4.5:1). On a light bar it would be 2.6:1, so a deeper tone of the
+    /// same orange, #B4532F (4.2:1), is used there. Resolved against the menu bar's own appearance.
+    static let orange = NSColor(name: "LimitbarOrange") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: 1)
+            : NSColor(srgbRed: 0xB4 / 255.0, green: 0x53 / 255.0, blue: 0x2F / 255.0, alpha: 1)
+    }
 }
 
 // MARK: - Keychain + network
@@ -25,7 +32,6 @@ enum FetchResult {
     case failure(String, Outcome)
 }
 
-private let expiredMessage = "Login expired — run Claude Code to renew"
 
 /// Reads the item through /usr/bin/security, the tool Claude Code itself saves it with. The item's access list
 /// already trusts that tool, so there is no Keychain dialog, and rebuilding Limitbar (a new ad-hoc signature)
@@ -47,7 +53,7 @@ func readCredential(now: Date = Date()) -> Result<(token: String, plan: String),
         return .failure(FetchFailure("Claude Code login unreadable", .failure))
     }
     if let ms = (oauth["expiresAt"] as? NSNumber)?.doubleValue, Date(timeIntervalSince1970: ms / 1000) <= now {
-        return .failure(FetchFailure(expiredMessage, .failure))
+        return .failure(FetchFailure(loginExpiredMessage, .failure))
     }
     return .success((token, (oauth["subscriptionType"] as? String ?? "").capitalized))
 }
@@ -89,7 +95,7 @@ private func request(token: String, plan: String, _ done: @escaping (FetchResult
         case 200:
             let limits = data.map(parseUsage) ?? []
             result = limits.isEmpty ? .failure("Unexpected reply from the usage service", .failure) : .limits(limits, plan: plan)
-        case 401: result = .failure(expiredMessage, .failure)
+        case 401: result = .failure(loginExpiredMessage, .failure)
         case 403: result = .failure("This login can't read usage (403)", .failure)
         case 429:
             let after = (http?.value(forHTTPHeaderField: "Retry-After")).flatMap(TimeInterval.init)
@@ -110,7 +116,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let menu = NSMenu()
     var limits: [Limit] = []
     var plan = ""
-    var error: String?
+    var error: (text: String, calm: Bool)?   // the last fetch failed; old numbers (if any) stay, dimmed
     var fetchedAt = Date.distantPast
     var poll = PollState()
     var inFlight = false
@@ -172,15 +178,19 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.limits = l; self.plan = p; self.error = nil; self.fetchedAt = Date()
                 self.poll = nextState(self.poll, after: .success)
             case let .failure(msg, outcome):
-                self.error = msg
                 self.poll = nextState(self.poll, after: outcome)
+                self.error = status(msg, poll: self.poll)
             }
             self.render()
             self.rebuildMenu()   // cheap; an open menu then always shows the result, however fast it came
-            if let delay = self.poll.retryDelay {   // offline: try again soon rather than in 5 minutes
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.onTick() }
-            }
+            self.scheduleRetry()
         }
+    }
+
+    /// Offline: try again soon rather than in 5 minutes.
+    func scheduleRetry() {
+        guard let delay = poll.retryDelay else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.onTick() }
     }
 
     // MARK: rendering
@@ -190,9 +200,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func render() {
         let now = Date()
         let (s, w) = barParts(limits, now: now)
+        // Dimmed when the numbers may be out of date (the menu says why), instead of a cryptic marker.
+        let alpha: CGFloat = barDimmed(fetchedAt: fetchedAt, now: now, failing: error != nil) ? Config.dimAlpha : 1
         let title = NSMutableAttributedString()
         func add(_ text: String, hot: Bool = false) {
-            title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: hot ? NSColor.systemRed : Config.orange]))
+            let color = (hot ? NSColor.systemRed : Config.orange).withAlphaComponent(alpha)
+            title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
         }
         if limits.isEmpty {
             add(error == nil ? "…" : "—")
@@ -200,9 +213,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(s.map { pct($0.percent) } ?? "–", hot: s?.isHot ?? false)
             add(" · ")
             add(w.map { pct($0.percent) } ?? "–", hot: w?.isHot ?? false)
-            if error != nil { add(" !") }   // showing last good values
         }
-        let tip = tooltip(limits, now: now, status: error)
+        let tip = tooltip(limits, now: now, status: error?.text)
         item.button?.attributedTitle = title
         item.button?.toolTip = tip
         item.button?.setAccessibilityLabel("Claude limits. " + tip.replacingOccurrences(of: "\n", with: ". "))
@@ -239,7 +251,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let when = fetchedAt == .distantPast ? (inFlight ? "Loading…" : "Not loaded yet") : updatedText(fetchedAt, now: now)
         menu.addItem(info(plan.isEmpty ? when : "\(when) · \(plan)"))
         if inFlight && fetchedAt != .distantPast { menu.addItem(info("Refreshing…")) }
-        if let e = error { menu.addItem(info("⚠︎ " + e)) }
+        if let e = error { menu.addItem(info(e.calm ? e.text : "⚠︎ " + e.text)) }
 
         menu.addItem(.separator())
         menu.addItem(action("Refresh", #selector(manualRefresh), key: "r"))
