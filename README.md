@@ -17,15 +17,16 @@ Weekly resets in 6d 7h (Wed 20:00)
 
 A line is added below only when something is wrong, such as an expired login.
 
-**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, **Settings…** (⌘,), and Quit.
+**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, **Settings…** (⌘,), Check for Updates… (in the downloaded app), and Quit.
 
 **Settings** is one small window where every change applies at once:
 
-- **Menu bar**: show when the session resets (`52% · 34% · 1h28m`), the mid-dot between numbers, the % sign, and Claude orange (off: the menu bar's own colour; hot limits stay red), with a live preview coloured exactly like the bar.
+- **Menu bar**: show when the session resets (`52% · 34% · 1h28m`), the mid-dot between numbers, the % sign, and Claude orange (off: the menu bar's own colour; hot limits stay red), with a live preview coloured by the bar's own rules.
 - **Notifications**: off until you turn them on (macOS asks permission the first time). Then each limit, Fable weekly included, has its own switch and its own percentages, `80, 95` by default; each notifies once per window. A separate switch sends "Session reset" when a session that passed its first percentage resets.
 - **General**: Start at login.
+- **Updates** (in the downloaded app): check automatically once a day, or Check Now.
 
-That's all it does. Three Swift files, no dependencies, no Dock icon.
+That's all it does. Four small Swift files, no Dock icon. Building from source needs nothing but Apple's command line tools; the downloaded app also bundles [Sparkle](https://sparkle-project.org) for updates.
 
 ## Requirements
 
@@ -36,17 +37,27 @@ That's all it does. Three Swift files, no dependencies, no Dock icon.
 
 ## Install
 
+With Homebrew:
+
+```bash
+brew install --cask nicojan/tap/limitbar
+```
+
+Or download `Limitbar-X.Y.Z.dmg` from [Releases](https://github.com/nicojan/limitbar/releases), open it and drag Limitbar to Applications. Both are signed and notarized, and update themselves (Settings → Updates).
+
+Or build it from source:
+
 ```bash
 git clone https://github.com/nicojan/limitbar.git
 cd limitbar
 ./build.sh
 ```
 
-This builds `~/Applications/Limitbar.app` and opens it. Click it, open **Settings…** and turn on **Start at login**.
+This builds `~/Applications/Limitbar.app` and opens it. A source build has no updater: to update, `git pull && ./build.sh` (a failed build leaves the installed copy untouched). It also installs the optional status-line wrapper described below, which the downloaded app doesn't include.
 
-If you run a network filter such as Little Snitch or LuLu, allow **Limitbar** to connect to `api.anthropic.com` on port 443. Some filters silently drop new, self-built apps, which shows up as "Offline (The request timed out.)" in the menu, and after three timeouts in a row as "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar".
+On first launch Limitbar explains that it is about to read Claude Code's sign-in from your Keychain, then reads it. Usually macOS asks nothing; if it does ask for your password, choose Always Allow. Then click Limitbar, open **Settings…** and turn on **Start at login**.
 
-To update: `git pull && ./build.sh`. A failed build leaves the installed copy untouched.
+If you run a network filter such as Little Snitch or LuLu, allow **Limitbar** to connect to `api.anthropic.com` on port 443 (and, for updates, `nicojan.github.io`, `github.com` and `release-assets.githubusercontent.com`). Some filters silently drop new, self-built apps, which shows up as "Offline (The request timed out.)" in the menu, and after three timeouts in a row as "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar". A source build gets a new signature on every rebuild, so the rule may need allowing again; the downloaded app keeps one signature across updates.
 
 To check it from a terminal without the menu bar:
 
@@ -56,7 +67,7 @@ To check it from a terminal without the menu bar:
 
 ## How it works
 
-1. Reads the access token Claude Code stores in your login Keychain (`Claude Code-credentials`), through Apple's `security` tool, the same tool Claude Code saves it with, so macOS shows no Keychain dialog. Read-only: Limitbar never refreshes or rewrites it, because refreshing would sign Claude Code out.
+1. Reads the access token Claude Code stores in your login Keychain (`Claude Code-credentials`), through Apple's `security` tool, the same tool Claude Code saves it with, so macOS normally shows no Keychain dialog. Before the first read, and before retrying after a refused or unanswered dialog, Limitbar says what it is about to read and why; that notice only appears at launch or when you click Refresh. Read-only: Limitbar never refreshes or rewrites it, because refreshing would sign Claude Code out.
 2. Calls `GET https://api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code's `/usage` uses, with that token.
 3. Shows the `limits` from the reply (session, weekly, and any model-scoped weekly limit such as Fable or Opus), falling back to the older `five_hour` / `seven_day` fields.
 
@@ -80,16 +91,17 @@ Pipes, `;`, `$(…)` and variables inside the quotes work as before. With no exi
 
 ## Privacy
 
-The token is read into memory for each request and sent only to `api.anthropic.com`; redirects are refused so it can't be forwarded anywhere else. Nothing is logged or written to disk (the optional status-line wrapper writes only the limit percentages and reset times), and requests use an ephemeral session with no cookies or cache. Requests identify themselves as `Limitbar/1.0`. The only other thing Limitbar opens is `claude.ai/settings/usage` in your browser, when you ask it to.
+The token is read into memory for each request and sent only to `api.anthropic.com`; redirects are refused so it can't be forwarded anywhere else. Nothing is logged or written to disk (the optional status-line wrapper writes only the limit percentages and reset times), and requests use an ephemeral session with no cookies or cache. Requests identify themselves as `Limitbar/1.0`. The only other things Limitbar opens are `claude.ai/settings/usage`, `nicojan.com` and the Buy me a coffee page, in your browser, when you click them. The downloaded app also checks for updates once a day (turn it off in Settings → Updates): it fetches `nicojan.github.io/limitbar/appcast.xml` and, when you install an update, the DMG from GitHub; no system profile is sent.
 
 ## Development
 
 ```bash
-./test.sh                     # parsing and formatting tests (Sources/Core.swift)
+./test.sh                     # parsing and formatting tests (Sources/Core.swift), wrapper and release-metadata checks
 LIMITBAR_OUT=.build ./build.sh    # build without installing or launching
+release/release.sh            # signed, notarized DMG with Sparkle (see release/DISTRIBUTION.md)
 ```
 
-`Sources/Core.swift` is pure logic (parsing, countdowns, tooltip text, when to fetch) and is what the tests cover. `Sources/main.swift` is the AppKit shell and `Sources/Settings.swift` the settings window: status item, Keychain read, network, timers, menu. The design is in [`docs/superpowers/specs/2026-11-12-limitbar-design.md`](docs/superpowers/specs/2026-11-12-limitbar-design.md); known issues and planned work are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
+`Sources/Updater.swift` wraps Sparkle and is a no-op in source builds. `Sources/Core.swift` is pure logic (parsing, countdowns, tooltip text, when to fetch) and is what the tests cover. `Sources/main.swift` is the AppKit shell and `Sources/Settings.swift` the settings window: status item, Keychain read, network, timers, menu. The design is in [`docs/superpowers/specs/2026-11-12-limitbar-design.md`](docs/superpowers/specs/2026-11-12-limitbar-design.md); known issues and planned work are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Credits
 

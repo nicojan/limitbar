@@ -1,16 +1,12 @@
 # Limitbar backlog
 
-Open work only; fixed items are deleted. Everything from the 2026-11-12 review is done except what is listed here (state as of `973feb9`).
-
-## Next
-
-- **Distribution.** Today it is build-from-source only (ad-hoc signed, `./build.sh`). Wanted: a `.dmg`, built-in updates, and `brew install`, following what Chorus does (`/Volumes/n1TB/Personal/Projects/dev/Chorus/release/DISTRIBUTION.md`, `release/homebrew/`, `release/appcast-worker/`, `docs/appcast.xml`). This changes the spec's "Signed/notarized release binaries" non-goal and the "no dependencies" claim if Sparkle comes in; decide and update both.
+Open work only; fixed items are deleted. Everything from the 2026-11-12 review is done except what is listed here (state as of the 1.1.0 release).
 
 ## Bugs
 
 ### Medium
 
-2. **Deny may not pause polling** (`keychainData` in `Core.swift`). Only exit 128 (`errSecUserCanceled`) maps to `.accessDenied`; a refused access-list read is plausibly `errSecAuthFailed` (-25293, exit 51), which would fall into the generic failure and re-prompt every 5 min. **Waiting on one measurement:** which code `security` returns when Deny is clicked. Measured on 2026-11-12: no answer → `security` blocks until killed (now handled by the 15 s deadline, which pauses polling); item not found → 44. The Deny click itself couldn't be automated (no assistive access) and two attempts were answered with Allow. Run the throwaway-keychain probe (`security find-generic-password` on an item that trusts only `/usr/bin/true`, click Deny), then map that code to `.accessDenied` with a test.
+2. **Deny exit code unmeasured** (`keychainData` in `Core.swift`). Exit 128 (`errSecUserCanceled`) and, since 1.1.0, 51 (`errSecAuthFailed`, the plausible code for a refused access-list read) map to `.accessDenied`, which pauses polling and brings the Keychain notice back before the next Refresh. Any other code falls into the generic failure and would re-prompt every 5 min. **Waiting on one measurement:** which code `security` returns when Deny is clicked. Measured on 2026-11-12: no answer → `security` blocks until killed (now handled by the 15 s deadline, which pauses polling); item not found → 44. The Deny click itself couldn't be automated (no assistive access) and two attempts were answered with Allow. Run the throwaway-keychain probe (`security find-generic-password` on an item that trusts only `/usr/bin/true`, click Deny), then map that code to `.accessDenied` with a test if it isn't 128 or 51.
 
 ## Still to confirm
 

@@ -5,8 +5,8 @@
 # `auto_updates true` tells Homebrew that Sparkle owns updates, so `brew upgrade` leaves an app that updated
 # itself alone. Livecheck reads the same appcast the app does.
 cask "limitbar" do
-  version "0.0.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "1.1.0"
+  sha256 "71b54d362432357d4a3c8414b8785827e403bbd79548295019705f0150fbbb1d"
 
   url "https://github.com/nicojan/limitbar/releases/download/v#{version}/Limitbar-#{version}.dmg"
   name "Limitbar"
