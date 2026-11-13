@@ -50,7 +50,8 @@ Picked 1: Nico chose the recommendation.
 - `Sources/main.swift` — AppKit: status item, Keychain read, async fetch, timers, menu, login item, notifications.
 - `Sources/Settings.swift` — the settings window (SwiftUI in an `NSWindow`), preferences in `UserDefaults`, the orange colour.
 - `Tests/main.swift` — plain assertion runner compiled with `Core.swift`; `./test.sh` runs it.
-- `build.sh` — compiles, bundles `Limitbar.app`, ad-hoc signs, installs to `~/Applications`, relaunches, and installs the status-line wrapper to `~/.local/bin/limitbar-statusline`.
+- `scripts/make-icon.swift` — draws the app icon (two white gauges on Claude orange) and writes `Resources/Limitbar.icns`; rerun it only to change the icon.
+- `build.sh` — compiles, bundles `Limitbar.app` with its icon, ad-hoc signs, installs to `~/Applications`, relaunches, and installs the status-line wrapper to `~/.local/bin/limitbar-statusline`.
 - `scripts/statusline-tee.py` — the Claude Code status-line wrapper (see Status-line fallback).
 
 **Menu bar title**: `S% · W%` in monospaced digits (session · weekly-all), in Claude orange (`#D97757`). A number at ≥90% or with non-`normal` severity is red. On a light menu bar the orange deepens to `#B4532F` for contrast (4.2:1 instead of 2.6:1). The whole title dims to half opacity when the numbers may be out of date: never loaded, over 10 minutes old, or the last fetch failed. On an inactive display's menu bar the system dims custom-coloured items itself (seen with another app's coloured text); with the menu open the highlight keeps the title readable (checked in dark mode). No data yet: `…`; no data at all because of an error: `—`.

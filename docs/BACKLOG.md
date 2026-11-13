@@ -4,7 +4,6 @@ Open work only; fixed items are deleted. Everything from the 2026-11-12 review i
 
 ## Next
 
-- **App icon.** The bundle has none (`Info.plist` has no `CFBundleIconFile`; `build.sh` copies no `.icns`).
 - **Distribution.** Today it is build-from-source only (ad-hoc signed, `./build.sh`). Wanted: a `.dmg`, built-in updates, and `brew install`, following what Chorus does (`/Volumes/n1TB/Personal/Projects/dev/Chorus/release/DISTRIBUTION.md`, `release/homebrew/`, `release/appcast-worker/`, `docs/appcast.xml`). This changes the spec's "Signed/notarized release binaries" non-goal and the "no dependencies" claim if Sparkle comes in; decide and update both.
 
 ## Bugs
