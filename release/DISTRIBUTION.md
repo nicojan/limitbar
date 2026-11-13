@@ -1,6 +1,6 @@
 # Distribution
 
-Limitbar ships three ways: build from source (`./build.sh`, ad-hoc signed, no updater), a Developer ID-signed and notarized `.dmg` with Sparkle for in-app updates, and `brew install --cask nicojan/tap/limitbar`, which installs that same DMG. It follows Chorus (`/Volumes/n1TB/Personal/Projects/dev/Chorus/release/DISTRIBUTION.md`), adapted to a `swiftc`-only build: no Xcode project, no SwiftPM.
+Limitbar ships three ways: build from source (`./build.sh`, ad-hoc signed, no updater), a Developer ID-signed and notarized `.dmg` with Sparkle for in-app updates, and `brew install --cask nicojan/tap/limitbar`, which installs that same DMG. It follows Chorus ([`release/DISTRIBUTION.md` in Chorus](https://github.com/nicojan/Chorus/blob/main/release/DISTRIBUTION.md)), adapted to a `swiftc`-only build: no Xcode project, no SwiftPM.
 
 Not sandboxed: it runs `/usr/bin/security` to read Claude Code's Keychain item, which a sandbox forbids. The Hardened Runtime is on, as notarization requires; no entitlements are needed.
 
@@ -32,7 +32,8 @@ From the repo root, on a clean, pushed `main`.
 
 3. **Publish the DMG**, only after `main` is pushed (`gh release create` tags the remote's HEAD, so an unpushed bump tags the wrong commit):
    ```sh
-   gh release create vX.Y.Z build/release-X.Y.Z-N/Limitbar-X.Y.Z.dmg --repo nicojan/limitbar --title "Limitbar X.Y.Z" --notes "…"
+   cp build/release-X.Y.Z-N/Limitbar-X.Y.Z.dmg build/release-X.Y.Z-N/Limitbar.dmg   # stable name: the README's Download button points at releases/latest/download/Limitbar.dmg
+   gh release create vX.Y.Z build/release-X.Y.Z-N/Limitbar-X.Y.Z.dmg build/release-X.Y.Z-N/Limitbar.dmg --repo nicojan/limitbar --title "Limitbar X.Y.Z" --notes "…"
    ```
 
 4. **Add an appcast item** at the top of `docs/appcast.xml`, by hand (`generate_appcast` can drop old items): `sparkle:version` the build number, `sparkle:shortVersionString` `X.Y.Z`, `sparkle:minimumSystemVersion` `13.0`, the enclosure URL `https://github.com/nicojan/limitbar/releases/download/vX.Y.Z/Limitbar-X.Y.Z.dmg`, and the `length` and `sparkle:edSignature` from step 2. Release notes go in a CDATA `<description>`.

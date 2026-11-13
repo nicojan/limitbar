@@ -1,5 +1,9 @@
 # Limitbar
 
+<p align="center">
+  <a href="https://github.com/nicojan/limitbar/releases/latest/download/Limitbar.dmg"><img src="https://img.shields.io/github/v/release/nicojan/limitbar?label=Download%20for%20macOS&style=for-the-badge&logo=apple&color=D97757" alt="Download Limitbar for macOS" height="40"></a>
+</p>
+
 Your Claude session and weekly limits, always visible in the macOS menu bar.
 
 ```
