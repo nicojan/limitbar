@@ -38,11 +38,16 @@ func parseDate(_ s: String) -> Date? {
     return isoFrac.date(from: s[..<dot] + "." + millis + rest)
 }
 
-/// `resets_at` as an ISO string, or as a Unix epoch in seconds or milliseconds.
-func parseReset(_ v: Any?) -> Date? {
-    if let s = v as? String { return parseDate(s) }
-    if let n = (v as? NSNumber)?.doubleValue, n > 0 { return Date(timeIntervalSince1970: n > 1e11 ? n / 1000 : n) }
-    return nil
+/// No limit window is longer than a week; anything over a year out is garbage, not a date to count down to.
+let maxResetAhead: TimeInterval = 366 * 86400
+
+/// `resets_at` as an ISO string, or as a Unix epoch in seconds or milliseconds. Rejects absurd values.
+func parseReset(_ v: Any?, now: Date = Date()) -> Date? {
+    let d: Date?
+    if let s = v as? String { d = parseDate(s) }
+    else if let n = (v as? NSNumber)?.doubleValue, n.isFinite, n > 0 { d = Date(timeIntervalSince1970: n > 1e11 ? n / 1000 : n) }
+    else { d = nil }
+    return d.flatMap { $0.timeIntervalSince(now) <= maxResetAhead ? $0 : nil }
 }
 
 private func fromLimitsArray(_ arr: [[String: Any]]) -> [Limit] {
@@ -94,14 +99,26 @@ func pct(_ p: Double) -> String { "\(Int(min(max(p, 0), 999).rounded()))%" }
 
 /// "resets in 1h 28m (22:20)", "resets in 20h 5m (Fri 19:57)", "resets in <1m (22:20)", "resetting now".
 /// The weekday appears whenever the reset isn't today, so a time is never ambiguous.
-func countdown(to d: Date, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
-    let left = Int(d.timeIntervalSince(now))
+func countdown(to d: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String {
+    let left = Int(min(d.timeIntervalSince(now), maxResetAhead))   // clamped: Int(...) traps on huge intervals
     if left <= 0 { return "resetting now" }
     let days = left / 86400, h = (left % 86400) / 3600, m = (left % 3600) / 60
     let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = locale
     f.setLocalizedDateFormatFromTemplate(calendar.isDate(d, inSameDayAs: now) ? "jj:mm" : "EEE jj:mm")
     let span = days >= 1 ? "\(days)d \(h)h" : h >= 1 ? "\(h)h \(m)m" : m >= 1 ? "\(m)m" : "<1m"
     return "resets in \(span) (\(f.string(from: d)))"
+}
+
+/// "Updated just now", "Updated 5 min ago", "Updated 2 h ago", then "Updated Wed 21:52" once it's a day old,
+/// so yesterday's numbers never read as today's.
+func updatedText(_ at: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String {
+    let ago = now.timeIntervalSince(at)
+    if ago < 60 { return "Updated just now" }
+    if ago < 3600 { return "Updated \(Int(ago / 60)) min ago" }
+    if ago < 86400 { return "Updated \(Int(ago / 3600)) h ago" }
+    let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = locale
+    f.setLocalizedDateFormatFromTemplate("EEE jj:mm")
+    return "Updated \(f.string(from: at))"
 }
 
 /// One tooltip / menu line. A stale limit says its window reset instead of showing an old number.
@@ -131,7 +148,8 @@ func tooltip(_ limits: [Limit], now: Date = Date(), status: String?) -> String {
 
 enum Poll {
     static let base: TimeInterval = 300        // normal cadence
-    static let maxBackoff: TimeInterval = 1800 // cap after repeated 429s
+    static let maxBackoff: TimeInterval = 1800 // cap on the doubling after repeated 429s
+    static let maxRetryAfter: TimeInterval = 6 * 3600  // honour Retry-After past the cap, within reason
     static let staleOnOpen: TimeInterval = 60  // menu open refetches when the last attempt is older
     static let retryDelays: [TimeInterval] = [15, 30, 60]  // after an offline failure (e.g. Wi-Fi not back after wake)
 }
@@ -178,7 +196,7 @@ func nextState(_ s: PollState, after o: Outcome) -> PollState {
     case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0
     case .rateLimited(let after):
         let doubled = min(s.interval * 2, Poll.maxBackoff)
-        n.interval = min(max(doubled, after ?? 0), Poll.maxBackoff); n.paused = false; n.offlineFailures = 0
+        n.interval = max(doubled, min(after ?? 0, Poll.maxRetryAfter)); n.paused = false; n.offlineFailures = 0
     case .accessDenied: n.paused = true
     case .offline: n.offlineFailures = min(s.offlineFailures + 1, Poll.retryDelays.count + 1)
     case .failure: n.offlineFailures = 0

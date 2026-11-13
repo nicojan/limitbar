@@ -14,4 +14,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: swiftc --version
       - run: ./test.sh
-      - run: OUT=$PWD/.build ./build.sh
+      - run: LIMITBAR_OUT=.build ./build.sh

@@ -69,7 +69,7 @@ The token is read into memory for each request and sent only to `api.anthropic.c
 
 ```bash
 ./test.sh                     # parsing and formatting tests (Sources/Core.swift)
-OUT=$PWD/.build ./build.sh    # build without installing or launching
+LIMITBAR_OUT=.build ./build.sh    # build without installing or launching
 ```
 
 `Sources/Core.swift` is pure logic (parsing, countdowns, tooltip text, when to fetch) and is what the tests cover. `Sources/main.swift` is the AppKit shell: status item, Keychain read, network, timers, menu. The design is in [`docs/superpowers/specs/2026-11-12-limitbar-design.md`](docs/superpowers/specs/2026-11-12-limitbar-design.md); known issues and planned work are in [`docs/BACKLOG.md`](docs/BACKLOG.md).

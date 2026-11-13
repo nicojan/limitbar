@@ -177,5 +177,25 @@ check(keychainData(.exited(status: 36, output: Data())).failure?.message.contain
 check(keychainData(.couldNotRun).failure?.outcome == .failure, "keychain: missing tool")
 check(hexDecode("zz") == nil && hexDecode("abc") == nil, "hex: rejects non-hex and odd length")
 
+// MARK: phase 3
+// Bug 6: Retry-After beyond the 30 min doubling cap is honoured (within a sane 6 h ceiling).
+check(nextState(polled, after: .rateLimited(retryAfter: 3600)).interval == 3600, "Retry-After over 30 min honoured")
+check(nextState(polled, after: .rateLimited(retryAfter: 1e9)).interval == Poll.maxRetryAfter, "absurd Retry-After capped")
+check(nextState(PollState(lastAttempt: t0, interval: 3600), after: .rateLimited(retryAfter: nil)).interval == Poll.maxBackoff, "doubling still capped at 30 min")
+
+// Bug 9: absurd reset times are rejected instead of trapping in Int(...).
+check(parseReset(NSNumber(value: 1e300), now: now) == nil, "huge epoch rejected")
+check(parseReset(NSNumber(value: Double.infinity), now: now) == nil, "infinite epoch rejected")
+check(parseReset("9999-01-01T00:00:00Z", now: now) == nil, "far-future ISO rejected")
+check(parseReset("2026-11-19T03:00:00Z", now: now) != nil, "a week out accepted")
+check(norm(countdown(to: .distantFuture, now: now, calendar: utc, locale: posix)).hasPrefix("resets in "), "countdown survives a far date")
+
+// Bug 10 / UX: relative "Updated" time; a weekday once it's a day old.
+func upd(_ ago: TimeInterval) -> String { norm(updatedText(now.addingTimeInterval(-ago), now: now, calendar: utc, locale: posix)) }
+check(upd(20) == "Updated just now", "updated: just now")
+check(upd(5 * 60) == "Updated 5 min ago", "updated: minutes")
+check(upd(2 * 3600 + 100) == "Updated 2 h ago", "updated: hours")
+check(upd(30 * 3600) == "Updated Wed 9:52 PM", "updated: over a day shows weekday: \(upd(30 * 3600))")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

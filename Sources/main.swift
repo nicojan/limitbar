@@ -116,7 +116,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var inFlight = false
     var inFlightSince = Date.distantPast
     var generation = 0   // replies from a superseded fetch are dropped
-    var menuOpen = false
     var timer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -131,6 +130,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             var p = self.poll; p.holdUntil = Date().addingTimeInterval(Config.wakeDelay); self.poll = p   // keep the overdue timer off
             DispatchQueue.main.asyncAfter(deadline: .now() + Config.wakeDelay) { [weak self] in self?.onWake() }
+        }
+        // Travelling across time zones: reset times are shown in local time, so re-render with the new zone.
+        NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { [weak self] _ in
+            NSTimeZone.resetSystemTimeZone()
+            self?.render(); self?.rebuildMenu()
         }
     }
 
@@ -159,7 +163,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         inFlight = true
         inFlightSince = Date()
         var p = poll; p.lastAttempt = inFlightSince; poll = p
-        if menuOpen { rebuildMenu() }
+        rebuildMenu()
         fetchUsage { [weak self] result in
             guard let self, gen == self.generation else { return }
             self.inFlight = false
@@ -172,7 +176,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.poll = nextState(self.poll, after: outcome)
             }
             self.render()
-            if self.menuOpen { self.rebuildMenu() }
+            self.rebuildMenu()   // cheap; an open menu then always shows the result, however fast it came
             if let delay = self.poll.retryDelay {   // offline: try again soon rather than in 5 minutes
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.onTick() }
             }
@@ -208,13 +212,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if shouldFetchOnOpen(poll, now: Date()) { fetch() }
         rebuildMenu()
     }
-    func menuWillOpen(_ menu: NSMenu) { menuOpen = true }
-    func menuDidClose(_ menu: NSMenu) { menuOpen = false }
 
     func rebuildMenu() {
         menu.removeAllItems()
+        // Columns sized to the widest label, so a long scoped name ("Sonnet 4.5 weekly") can't break them.
+        let widest = limits.map { ($0.label as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        let pctWidth = ("100%" as NSString).size(withAttributes: [.font: font]).width
         let para = NSMutableParagraphStyle()
-        para.tabStops = [NSTextTab(textAlignment: .right, location: 130), NSTextTab(textAlignment: .left, location: 145)]
+        para.tabStops = [NSTextTab(textAlignment: .right, location: ceil(widest + 12 + pctWidth)),
+                         NSTextTab(textAlignment: .left, location: ceil(widest + 12 + pctWidth + 14))]
         let now = Date()
         for l in limits {
             let stale = l.isStale(now: now)
@@ -230,8 +236,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !limits.isEmpty { menu.addItem(.separator()) }
 
-        let df = DateFormatter(); df.setLocalizedDateFormatFromTemplate("jj:mm")
-        let when = fetchedAt == .distantPast ? (inFlight ? "Loading…" : "Not loaded yet") : "Updated \(df.string(from: fetchedAt))"
+        let when = fetchedAt == .distantPast ? (inFlight ? "Loading…" : "Not loaded yet") : updatedText(fetchedAt, now: now)
         menu.addItem(info(plan.isEmpty ? when : "\(when) · \(plan)"))
         if inFlight && fetchedAt != .distantPast { menu.addItem(info("Refreshing…")) }
         if let e = error { menu.addItem(info("⚠︎ " + e)) }
