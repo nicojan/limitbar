@@ -173,6 +173,8 @@ check(keychainData(.exited(status: 0, output: Data("{\"a\":1}\n".utf8))) == .suc
 check(keychainData(.exited(status: 0, output: Data("7b7d".utf8))) == .success(Data("{}".utf8)), "keychain: hex decoded")
 check(keychainData(.exited(status: 44, output: Data())).failure?.message == "No Claude Code login found", "keychain: 44 no item")
 check(keychainData(.exited(status: 128, output: Data())).failure?.outcome == .accessDenied, "keychain: 128 cancelled pauses")
+// Review 3: a refused access-list read is likely errSecAuthFailed (51), not only 128; either pauses instead of re-prompting.
+check(keychainData(.exited(status: 51, output: Data())).failure?.outcome == .accessDenied, "keychain: 51 auth failed pauses")
 check(keychainData(.timedOut).failure?.outcome == .keychainNoAnswer, "keychain: no answer pauses instead of re-prompting")
 check(keychainData(.timedOut).failure?.message.contains("Refresh") == true, "keychain: no answer says how to retry")
 check(keychainData(.exited(status: 36, output: Data())).failure?.message.contains("locked") == true, "keychain: 36 says locked")
@@ -354,6 +356,14 @@ check(higher?.map { "\($0.label)=\(Int($0.percent))" } == ["Session=76", "Weekly
 check(mergeStatusLine(apiNow, [lim(.session, 3, resetsIn: 3600 + 5 * 3600)])?.first?.percent == 3, "merge: a later window wins even at a lower %")
 check(mergeStatusLine(apiNow, [lim(.session, 90, resetsIn: 3600 - 5 * 3600)]) == nil, "merge: an earlier window loses")
 check(mergeStatusLine([], [lim(.weekly, 12, resetsIn: 86400)])?.map { $0.label } == ["Weekly"], "merge: fills a missing limit")
+
+// Keychain notice: explained before the first read, and again before a retry after macOS's prompt was refused or unanswered.
+check(keychainNoticeNeeded(acknowledged: false, last: nil), "notice: first read is explained")
+check(!keychainNoticeNeeded(acknowledged: true, last: nil), "notice: once acknowledged, not again")
+check(!keychainNoticeNeeded(acknowledged: true, last: .success), "notice: not after a good read")
+check(!keychainNoticeNeeded(acknowledged: true, last: .offline(timedOut: true)), "notice: not for a network failure")
+check(keychainNoticeNeeded(acknowledged: true, last: .accessDenied), "notice: again after Deny")
+check(keychainNoticeNeeded(acknowledged: true, last: .keychainNoAnswer), "notice: again after an unanswered prompt")
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

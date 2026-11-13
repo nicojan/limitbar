@@ -30,3 +30,28 @@ ls -A "$CACHE_DIR" | command grep -q '^\.latest-' && fail "temp file left behind
 printf %s "$IN" | HOME="$FAKE_HOME" $W /nonexistent/cmd 2>/dev/null && st=0 || st=$?
 [ "$st" = 127 ] || fail "missing command should exit 127 ($st)"
 echo "wrapper: ok"
+
+# Release metadata: the appcast parses, and its newest item agrees with the cask and isn't ahead of Info.plist.
+python3 -I - docs/appcast.xml release/homebrew/limitbar.rb Info.plist <<'PY' || exit 1
+import plistlib, re, sys, xml.etree.ElementTree as ET
+appcast, cask, plist = sys.argv[1:]
+S = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+items = ET.parse(appcast).getroot().findall("channel/item")
+info = plistlib.load(open(plist, "rb"))
+cask_version = re.search(r'^\s*version "([^"]+)"', open(cask).read(), re.M).group(1)
+if items:
+    top = items[0]
+    builds = [int(i.findtext(S + "version")) for i in items]
+    assert builds == sorted(builds, reverse=True) and len(set(builds)) == len(builds), f"appcast builds not newest-first and unique: {builds}"
+    assert top.findtext(S + "shortVersionString") == cask_version, f"cask {cask_version} != appcast {top.findtext(S + 'shortVersionString')}"
+    assert int(info["CFBundleVersion"]) >= builds[0], f"Info.plist build {info['CFBundleVersion']} is behind the appcast's {builds[0]}"
+    if info["CFBundleShortVersionString"] != top.findtext(S + "shortVersionString"):   # a new version needs a new build number
+        assert int(info["CFBundleVersion"]) > builds[0], f"Info.plist is {info['CFBundleShortVersionString']} but still build {info['CFBundleVersion']}"
+    assert not re.search(r'sha256 "0{64}"', open(cask).read()), "cask still has the placeholder sha256"
+    enc = top.find("enclosure")
+    assert enc.get("url").endswith(f"/v{cask_version}/Limitbar-{cask_version}.dmg"), enc.get("url")
+    assert enc.get(S + "edSignature") and int(enc.get("length")) > 0, "enclosure needs edSignature and length"
+else:
+    assert cask_version == "0.0.0", "cask has a version but the appcast has no item"
+print("release metadata: ok")
+PY

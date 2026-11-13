@@ -15,6 +15,13 @@ func claudeOrange(alpha: CGFloat) -> NSColor {
     }
 }
 
+/// "1.1.0 (2)": the marketing version and the build number Sparkle compares.
+let appVersion: String = {
+    let info = Bundle.main.infoDictionary ?? [:]
+    let short = info["CFBundleShortVersionString"] as? String ?? "?"
+    return info["CFBundleVersion"].map { "\(short) (\($0))" } ?? short
+}()
+
 /// Bar text opacity when its numbers may be out of date.
 let barDimAlpha: CGFloat = 0.5
 
@@ -54,6 +61,11 @@ enum Prefs {
         d.set(s.showSessionReset, forKey: "barSessionReset"); d.set(s.separator, forKey: "barSeparator")
         d.set(s.percentSign, forKey: "barPercentSign"); d.set(s.orange, forKey: "barOrange")
     }
+    /// The Keychain notice was seen and accepted once; it then shows again only after a refused or unanswered prompt.
+    static var keychainNoticeAcknowledged: Bool {
+        get { d.bool(forKey: "keychainNoticeAcknowledged") }
+        set { d.set(newValue, forKey: "keychainNoticeAcknowledged") }
+    }
     static func notify() -> NotifySettings { .decode(d.data(forKey: "notifySettings")) }
     static func save(_ n: NotifySettings) { d.set(try? JSONEncoder().encode(n), forKey: "notifySettings") }
 }
@@ -66,19 +78,24 @@ final class SettingsModel: ObservableObject {
     @Published var loginOn: Bool
     let labels: [String]
     let preview: (BarStyle) -> BarPreview
+    let updates: Updates?   // nil when built from source (no Sparkle)
     private let changed: () -> Void
     private let setNotifications: (Bool, @escaping (Bool) -> Void) -> Void
     private let setLogin: (Bool) -> Bool
 
     init(labels: [String], notificationsOn: Bool, loginOn: Bool, preview: @escaping (BarStyle) -> BarPreview, changed: @escaping () -> Void,
-         setNotifications: @escaping (Bool, @escaping (Bool) -> Void) -> Void, setLogin: @escaping (Bool) -> Bool) {
+         setNotifications: @escaping (Bool, @escaping (Bool) -> Void) -> Void, setLogin: @escaping (Bool) -> Bool, updates: Updates? = nil) {
         style = Prefs.style(); notify = Prefs.notify()
         self.labels = labels; self.notificationsOn = notificationsOn; self.loginOn = loginOn
+        self.updates = Updates.available ? updates : nil
         self.preview = preview; self.changed = changed; self.setNotifications = setNotifications; self.setLogin = setLogin
     }
 
     var notificationsBinding: Binding<Bool> {
         Binding(get: { self.notificationsOn }, set: { on in self.setNotifications(on) { self.notificationsOn = $0; self.changed() } })
+    }
+    var autoUpdateBinding: Binding<Bool> {
+        Binding(get: { self.updates?.automatic ?? false }, set: { on in self.updates?.automatic = on; self.objectWillChange.send() })
     }
     var loginBinding: Binding<Bool> { Binding(get: { self.loginOn }, set: { self.loginOn = self.setLogin($0) }) }
 
@@ -118,6 +135,22 @@ struct SettingsView: View {
             }
             Section("General") {
                 Toggle("Start at login", isOn: model.loginBinding)
+            }
+            if let updates = model.updates {
+                Section("Updates") {
+                    Toggle("Check for updates automatically", isOn: model.autoUpdateBinding)
+                    LabeledContent("Limitbar \(appVersion)") {
+                        Button("Check Now") { updates.check() }
+                    }
+                }
+            }
+            Section {
+                HStack {
+                    Link("Buy me a coffee", destination: URL(string: "https://buymeacoffee.com/0xff.r4bbit")!)
+                    Spacer()
+                    if model.updates == nil { Text("Limitbar \(appVersion)").foregroundStyle(.secondary) }
+                }
+                .font(.callout)
             }
         }
         .formStyle(.grouped)

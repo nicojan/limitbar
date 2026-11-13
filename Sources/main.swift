@@ -10,6 +10,7 @@ import UserNotifications
 enum Config {
     static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     static let usagePage = URL(string: "https://claude.ai/settings/usage")!
+    static let authorPage = URL(string: "https://nicojan.com/")!
     static let keychainService = "Claude Code-credentials"
     static let tick: TimeInterval = 60      // re-render countdowns, check whether a fetch is due
     static let timeout: TimeInterval = 10
@@ -171,15 +172,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var inFlightSince = Date.distantPast
     var generation = 0   // replies from a superseded fetch are dropped
     var timer: Timer?
+    var updates: Updates?   // created at launch, never in `--once`
+    var lastKeychainOutcome: Outcome?   // how the last read that reached the Keychain went; nil after a success
+    var noticeOpen = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        updates = Updates()
+        updates?.onPendingChange = { [weak self] in self?.rebuildMenu() }
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
         render()
-        fetch()
-        timer = Timer.scheduledTimer(withTimeInterval: Config.tick, repeats: true) { [weak self] _ in self?.onTick() }
-        timer?.tolerance = 5
+        // .common: keeps ticking while a modal (the Keychain notice, Sparkle's window) or the menu is open.
+        let t = Timer(timeInterval: Config.tick, repeats: true) { [weak self] _ in self?.onTick() }
+        t.tolerance = 5
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             var p = userReturned(self.poll); p.holdUntil = Date().addingTimeInterval(Config.wakeDelay); self.poll = p   // keep the overdue timer off
@@ -196,6 +204,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSTimeZone.resetSystemTimeZone()
             self?.render(); self?.rebuildMenu()
         }
+        // After setup, so a first-launch Keychain notice left open doesn't hold up the timer and observers.
+        DispatchQueue.main.async { [weak self] in self?.fetch(explain: true) }
     }
 
     /// Always re-renders, so countdowns and reset windows stay current even while a fetch is outstanding.
@@ -214,12 +224,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// any fetch still outstanding instead of silently doing nothing.
     @objc func manualRefresh() {
         var p = poll; p.paused = false; poll = p
-        fetch(force: true)
+        fetch(force: true, explain: true)
     }
 
-    func fetch(force: Bool = false) {
+    /// `explain`: the user is here on purpose (launch, Refresh), so the Keychain notice may be shown if it's due.
+    /// Other fetches (timer, wake, unlock, menu open) never show a modal; when the notice is due they wait for Refresh.
+    func fetch(force: Bool = false, explain: Bool = false) {
         // A fetch is bounded (Keychain deadline + request timeout), but never let one block the rest for long.
         guard force || !inFlight || Date().timeIntervalSince(inFlightSince) > Config.stuckAfter else { return }
+        guard explainKeychainIfNeeded(ask: explain) else { return }
         generation += 1
         let gen = generation
         inFlight = true
@@ -235,7 +248,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.notifier.check(l)
                 self.limits = l; self.plan = p; self.error = nil; self.fetchedAt = Date(); self.fromStatusLine = false
                 self.poll = nextState(self.poll, after: .success)
+                self.lastKeychainOutcome = nil
             case let .failure(msg, outcome):
+                self.lastKeychainOutcome = outcome
                 self.poll = nextState(self.poll, after: outcome)
                 self.error = status(msg, poll: self.poll)
                 self.useStatusLineCache()
@@ -244,6 +259,43 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.rebuildMenu()   // cheap; an open menu then always shows the result, however fast it came
             self.scheduleRetry()
         }
+    }
+
+    /// Says what is about to happen before the Keychain read that may bring up macOS's password prompt: before the
+    /// first read, and before a retry after that prompt was refused or unanswered. false: no read now (Not Now, or
+    /// the notice is due but `ask` is false); polling pauses until Refresh.
+    func explainKeychainIfNeeded(ask: Bool) -> Bool {
+        guard keychainNoticeNeeded(acknowledged: Prefs.keychainNoticeAcknowledged, last: lastKeychainOutcome) else { return true }
+        guard ask, !noticeOpen else {
+            if !noticeOpen { pauseForKeychain() }
+            return false
+        }
+        noticeOpen = true
+        defer { noticeOpen = false }
+        let alert = NSAlert()
+        alert.messageText = "Limitbar is about to read your Claude Code sign-in"
+        alert.informativeText = (lastKeychainOutcome == nil ? "" : "Last time, the Keychain didn't allow it.\n\n")
+            + "To show your limits, Limitbar reads the sign-in Claude Code keeps in your login Keychain and sends it only to "
+            + "api.anthropic.com. It never changes or saves it.\n\nmacOS may now ask for your Mac password. Choose Always Allow "
+            + "so it doesn't ask again."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Not Now")
+        if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            pauseForKeychain()
+            return false
+        }
+        Prefs.keychainNoticeAcknowledged = true
+        lastKeychainOutcome = nil
+        return true
+    }
+
+    func pauseForKeychain() {
+        var p = poll; p.paused = true; p.liftsOnUnlock = false; poll = p
+        if error == nil || error?.calm == true || lastKeychainOutcome == nil {
+            error = (text: "Waiting to read the Keychain — click Refresh when you're ready", calm: true)
+        }
+        render(); rebuildMenu()
     }
 
     /// When the API path fails (expired token, paused, backing off), take what Claude Code's status line has seen,
@@ -337,9 +389,31 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("Refresh", #selector(manualRefresh), key: "r"))
         menu.addItem(action("Open Usage Page…", #selector(openPage)))
         menu.addItem(action("Settings…", #selector(openSettings), key: ","))
+        if let v = updates?.pending {
+            menu.addItem(action("Update Available: Limitbar \(v)…", #selector(checkForUpdates)))
+        } else if Updates.available {
+            menu.addItem(action("Check for Updates…", #selector(checkForUpdates)))
+        }
         menu.addItem(.separator())
+        menu.addItem(madeBy())
         menu.addItem(action("Quit Limitbar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
     }
+
+    /// "Made with ♥ by Nico Jan", small and secondary like Quip's footer; opens nicojan.com.
+    func madeBy() -> NSMenuItem {
+        let mi = action("Made with ♥ by Nico Jan", #selector(openAuthor))
+        let font = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+        let title = NSMutableAttributedString(string: "Made with ", attributes: base)
+        title.append(NSAttributedString(string: "♥", attributes: base.merging([.foregroundColor: NSColor.systemPink]) { $1 }))
+        title.append(NSAttributedString(string: " by Nico Jan", attributes: base))
+        mi.attributedTitle = title
+        mi.toolTip = Config.authorPage.absoluteString
+        return mi
+    }
+
+    @objc func openAuthor() { NSWorkspace.shared.open(Config.authorPage) }
+    @objc func checkForUpdates() { updates?.check() }
 
     var style: BarStyle { Prefs.style() }
 
@@ -356,7 +430,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             changed: { [weak self] in self?.render(); self?.rebuildMenu(); self?.notifier.check(self?.limits ?? []) },
             setNotifications: { [weak self] on, done in self?.notifier.set(on, done) },
-            setLogin: { [weak self] on in self?.setLogin(on) ?? false })
+            setLogin: { [weak self] on in self?.setLogin(on) ?? false }, updates: updates)
         settingsWindow.show(model)
     }
 
@@ -392,6 +466,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 // MARK: - entry
+
+// `Limitbar --version`: the installed version, for checking an update from a terminal.
+if CommandLine.arguments.contains("--version") {
+    print("Limitbar \(appVersion)\(Updates.available ? "" : " (built from source, no updater)")")
+    exit(0)
+}
 
 // `Limitbar --once`: fetch, print what the menu bar would show, exit. For checking an install from a terminal.
 if CommandLine.arguments.contains("--once") {

@@ -285,6 +285,13 @@ func hexDecode(_ s: String) -> Data? {
 /// `security` exits with the low byte of the OSStatus: 44 errSecItemNotFound, 128 errSecUserCanceled,
 /// 36 errSecInteractionNotAllowed. No answer before the deadline means a dialog nobody answered (or a locked
 /// keychain): polling pauses until Refresh rather than putting the dialog back every 5 minutes.
+/// Whether to explain the Keychain read before making it: before the very first read, and before a retry after
+/// macOS's own prompt was refused or went unanswered (when that prompt is likely to come back).
+func keychainNoticeNeeded(acknowledged: Bool, last: Outcome?) -> Bool {
+    guard acknowledged else { return true }
+    return last == .accessDenied || last == .keychainNoAnswer
+}
+
 func keychainData(_ run: ToolRun) -> Result<Data, FetchFailure> {
     switch run {
     case .couldNotRun: return .failure(FetchFailure("Couldn't run the security tool", .failure))
@@ -293,7 +300,8 @@ func keychainData(_ run: ToolRun) -> Result<Data, FetchFailure> {
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return .success(text.hasPrefix("{") ? Data(text.utf8) : hexDecode(text) ?? Data(text.utf8))
     case .exited(44, _): return .failure(FetchFailure("No Claude Code login found", .failure))
-    case .exited(128, _): return .failure(FetchFailure("Keychain access denied — click Refresh to ask again", .accessDenied))
+    // 128 errSecUserCanceled; 51 errSecAuthFailed, which a refused access-list read plausibly returns (unmeasured).
+    case .exited(128, _), .exited(51, _): return .failure(FetchFailure("Keychain access denied — click Refresh to ask again", .accessDenied))
     case .exited(36, _): return .failure(FetchFailure("Keychain is locked — unlock it, then click Refresh", .failure))
     case let .exited(code, _): return .failure(FetchFailure("Keychain read failed (\(code))", .failure))
     }

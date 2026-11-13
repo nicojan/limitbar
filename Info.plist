@@ -1,14 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Limitbar</string>
-<key>CFBundleDisplayName</key><string>Limitbar</string>
-<key>CFBundleIdentifier</key><string>com.nicojan.limitbar</string>
-<key>CFBundleExecutable</key><string>Limitbar</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>1.0.0</string>
-<key>CFBundleIconFile</key><string>Limitbar</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>LSUIElement</key><true/>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Limitbar</string>
+	<key>CFBundleExecutable</key>
+	<string>Limitbar</string>
+	<key>CFBundleIconFile</key>
+	<string>Limitbar</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nicojan.limitbar</string>
+	<key>CFBundleName</key>
+	<string>Limitbar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://nicojan.github.io/limitbar/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>6/h2Pfjbo39vHie8JIt/kY7h0wQvmQxj9Ea0W3gnH0w=</string>
+</dict>
+</plist>

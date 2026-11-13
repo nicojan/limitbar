@@ -15,3 +15,8 @@ jobs:
       - run: swiftc --version
       - run: ./test.sh
       - run: LIMITBAR_OUT=.build ./build.sh
+      # The release build: Sparkle linked in, ad-hoc signed, not notarized. Proves the updater code compiles and loads.
+      - run: SIGN_ID=- NOTARY_PROFILE= OUT=.build/release release/release.sh
+      - run: |
+          v="$(.build/release/Limitbar.app/Contents/MacOS/Limitbar --version)"; echo "$v"
+          case "$v" in *"no updater"*) echo "release build is missing Sparkle"; exit 1;; esac
