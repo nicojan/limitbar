@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds Limitbar.app (menu bar only, no Dock icon).
-#   ./build.sh                           -> installs to ~/Applications and relaunches it
+#   ./build.sh                           -> installs to ~/Applications and relaunches it (and the status-line wrapper to ~/.local/bin)
 #   LIMITBAR_OUT=/some/folder ./build.sh -> builds there and does not launch (relative paths are from where you run it)
 # Builds in a temp folder first, so a failed compile leaves the installed copy untouched and running.
 set -e
@@ -26,4 +26,11 @@ fi
 rm -rf "$DEST/Limitbar.app"
 mv "$NEW" "$DEST/Limitbar.app"
 echo "built $DEST/Limitbar.app"
-if [ -z "$OUT_DIR" ]; then open "$DEST/Limitbar.app"; fi
+if [ -z "$OUT_DIR" ]; then
+  # The status-line wrapper lives on the home volume, so Claude Code's status line works even if this repo's drive isn't mounted.
+  mkdir -p "$HOME/.local/bin"
+  cp scripts/statusline-tee.py "$HOME/.local/bin/limitbar-statusline.tmp" && chmod +x "$HOME/.local/bin/limitbar-statusline.tmp"
+  mv "$HOME/.local/bin/limitbar-statusline.tmp" "$HOME/.local/bin/limitbar-statusline"
+  echo "installed $HOME/.local/bin/limitbar-statusline"
+  open "$DEST/Limitbar.app"
+fi

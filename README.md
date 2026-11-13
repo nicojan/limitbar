@@ -17,7 +17,9 @@ Weekly resets in 6d 7h (Wed 20:00)
 
 A line is added below only when something is wrong, such as an expired login.
 
-**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, Start at Login, **Notify at 80% and 95%**, and Quit.
+**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, a **Settings** submenu, and Quit.
+
+**Settings** holds toggles, not a window: Show Session Reset in Bar (`52% · 34% · 1h28m`), Mid-dot Separator, Show % Sign, Claude Orange (off: plain menu bar colour; hot limits stay red), Notify at 80% and 95%, and Start at Login.
 
 Notifications are off until you turn them on (macOS asks permission the first time). Each limit then notifies once per window at 80% and at 95%, and you get a "Session reset" notice when a session you'd pushed past 80% resets.
 
@@ -55,17 +57,27 @@ To check it from a terminal without the menu bar:
 2. Calls `GET https://api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code's `/usage` uses, with that token.
 3. Shows the `limits` from the reply (session, weekly, and any model-scoped weekly limit such as Fable or Opus), falling back to the older `five_hour` / `seven_day` fields.
 
-It fetches at launch, every 5 minutes, when you open the menu or wake the Mac if the data is over a minute old, and once right after a limit resets. If Claude answers "too many requests", it backs off up to 30 minutes.
+It fetches at launch, every 5 minutes, when you open the menu or wake the Mac if the data is over a minute old, and once right after a limit resets. If Claude answers "too many requests", it backs off: doubling up to 30 minutes, longer if Claude's `Retry-After` asks (up to 6 hours). Without a network it retries after 15 s, 30 s and 60 s.
 
 ## Limits of the approach
 
 - **The endpoint is undocumented.** Anthropic can change or remove it at any time; if the reply stops making sense the menu says so and the bar shows `—`.
-- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch.
+- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch. With the optional status-line wrapper below, Limitbar shows current numbers even while the token is expired, as long as a Claude Code session is open.
 - **It only knows what the endpoint reports**: no token counts or history. The pace projection is a straight line from the window so far. For those, see [CodexBar](https://github.com/steipete/CodexBar) or the upstream project below.
+
+## Optional: numbers from Claude Code's status line
+
+Claude Code passes your limits to custom status-line commands. `./build.sh` installs a small wrapper, `~/.local/bin/limitbar-statusline`, which copies just those numbers to `~/Library/Application Support/Limitbar/latest.json` and then runs your existing status line unchanged. Limitbar uses that file when its own request fails (most often an expired token), with no token or network. To turn it on, put the wrapper in front of your status line command in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "~/.local/bin/limitbar-statusline <your existing command>" }
+```
+
+With no existing status line, use `~/.local/bin/limitbar-statusline` alone (it prints nothing).
 
 ## Privacy
 
-The token is read into memory for each request and sent only to `api.anthropic.com`; redirects are refused so it can't be forwarded anywhere else. Nothing is logged or written to disk, and requests use an ephemeral session with no cookies or cache. Requests identify themselves as `Limitbar/1.0`. The only other thing Limitbar opens is `claude.ai/settings/usage` in your browser, when you ask it to.
+The token is read into memory for each request and sent only to `api.anthropic.com`; redirects are refused so it can't be forwarded anywhere else. Nothing is logged or written to disk (the optional status-line wrapper writes only the limit percentages and reset times), and requests use an ephemeral session with no cookies or cache. Requests identify themselves as `Limitbar/1.0`. The only other thing Limitbar opens is `claude.ai/settings/usage` in your browser, when you ask it to.
 
 ## Development
 

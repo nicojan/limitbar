@@ -161,6 +161,7 @@ struct PollState: Equatable {
     var offlineFailures = 0   // consecutive offline failures; the first few retry quickly
     var holdUntil: Date?      // after wake: the timer waits for the network to come back
     var timeouts = 0          // consecutive timeouts: a firewall silently dropping requests looks like this
+    var liftsOnUnlock = false // paused because the Keychain didn't answer: retry once when the user is back
 
     var backingOff: Bool { interval > Poll.base }
     /// The quick retry delay in force, or nil when the normal interval applies.
@@ -175,7 +176,7 @@ struct PollState: Equatable {
 func shouldFetch(_ s: PollState, limits: [Limit], now: Date) -> Bool {
     guard !s.paused else { return false }
     if let hold = s.holdUntil, now < hold { return false }
-    guard let last = s.lastAttempt else { return true }
+    guard let last = s.lastAttempt, last <= now else { return true }   // a future last attempt: the clock moved back
     if now.timeIntervalSince(last) >= (s.retryDelay ?? s.interval) { return true }
     guard !s.backingOff else { return false }
     return limits.contains { l in l.resetsAt.map { $0 > last && $0 <= now } ?? false }
@@ -187,18 +188,19 @@ func shouldFetchOnOpen(_ s: PollState, now: Date) -> Bool {
     return s.lastAttempt.map { now.timeIntervalSince($0) >= Poll.staleOnOpen } ?? true
 }
 
-enum Outcome: Equatable { case success, rateLimited(retryAfter: TimeInterval?), accessDenied, offline(timedOut: Bool), failure }
+enum Outcome: Equatable { case success, rateLimited(retryAfter: TimeInterval?), accessDenied, keychainNoAnswer, offline(timedOut: Bool), failure }
 
 /// The next poll state after a fetch. Backoff holds until a success; access denied pauses polling;
 /// offline failures retry quickly a few times, then fall back to the normal cadence.
 func nextState(_ s: PollState, after o: Outcome) -> PollState {
     var n = s   // a copy; the caller's state is untouched
     switch o {
-    case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0; n.timeouts = 0
+    case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0; n.timeouts = 0; n.liftsOnUnlock = false
     case .rateLimited(let after):
         let doubled = min(s.interval * 2, Poll.maxBackoff)
         n.interval = max(doubled, min(after ?? 0, Poll.maxRetryAfter)); n.paused = false; n.offlineFailures = 0
-    case .accessDenied: n.paused = true
+    case .accessDenied: n.paused = true; n.liftsOnUnlock = false
+    case .keychainNoAnswer: n.paused = true; n.liftsOnUnlock = true; n.timeouts = 0
     case .offline(let timedOut):
         n.offlineFailures = min(s.offlineFailures + 1, Poll.retryDelays.count + 1)
         n.timeouts = timedOut ? s.timeouts + 1 : 0
@@ -207,6 +209,13 @@ func nextState(_ s: PollState, after o: Outcome) -> PollState {
     if case .rateLimited = o { n.timeouts = 0 }
     if case .accessDenied = o { n.timeouts = 0 }
     return n
+}
+
+/// The user is back (screen unlocked or Mac woke). A pause from a Keychain that didn't answer lifts, so one
+/// fetch is tried; a pause from an explicit Deny stays until Refresh, so no dialog comes back on every unlock.
+func userReturned(_ s: PollState) -> PollState {
+    guard s.paused, s.liftsOnUnlock else { return s }
+    var n = s; n.paused = false; n.liftsOnUnlock = false; return n
 }
 
 // MARK: - status
@@ -279,7 +288,7 @@ func hexDecode(_ s: String) -> Data? {
 func keychainData(_ run: ToolRun) -> Result<Data, FetchFailure> {
     switch run {
     case .couldNotRun: return .failure(FetchFailure("Couldn't run the security tool", .failure))
-    case .timedOut: return .failure(FetchFailure("Keychain didn't answer — click Refresh to try again", .accessDenied))
+    case .timedOut: return .failure(FetchFailure("Keychain didn't answer — click Refresh to try again", .keychainNoAnswer))
     case let .exited(0, data):
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return .success(text.hasPrefix("{") ? Data(text.utf8) : hexDecode(text) ?? Data(text.utf8))
@@ -302,6 +311,7 @@ struct Pace: Equatable {
     let elapsed: Double   // percent of the window
     let runsOutAt: Date?
     var ahead: Bool { runsOutAt != nil }
+    var reached: Bool { used >= 100 }
 }
 
 let paceMinElapsed = 5.0   // percent of the window: earlier than this, a projection is mostly noise
@@ -320,6 +330,7 @@ func pace(_ l: Limit, now: Date) -> Pace? {
 /// "52% used, 30% of window elapsed — ahead of pace, runs out ~21:40" or "… — within pace".
 /// The run-out time carries a weekday when it isn't today, as countdowns do.
 func paceText(_ p: Pace, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String {
+    if p.reached { return "\(pct(p.used)) used — limit reached" }
     let head = "\(pct(p.used)) used, \(pct(p.elapsed)) of window elapsed — "
     guard let out = p.runsOutAt else { return head + "within pace" }
     let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = locale
@@ -338,12 +349,16 @@ struct Alert: Equatable {
 let alertThresholds: [Double] = [80, 95]
 let resetAlertWithin: TimeInterval = 3600   // a reset older than this (say, seen at relaunch) isn't news
 
+/// A window's identity for alert keys. `resets_at` jitters by under a second between replies (05:20:00.39 in one,
+/// 05:19:59.9 in the next), so it is rounded to 10 minutes; distinct windows are at least 5 hours apart.
+func windowID(_ reset: Date) -> Int { Int((reset.timeIntervalSince1970 / 600).rounded()) * 600 }
+
 /// Notifications due now: each limit at 80% and 95%, once per window (the key carries the reset time), and
 /// "Session reset" when a session pushed past 80% resets. `sent` holds the keys already delivered.
 func alertsDue(_ limits: [Limit], now: Date, sent: Set<String>) -> [Alert] {
     limits.compactMap { l -> Alert? in
         guard let reset = l.resetsAt else { return nil }
-        let window = Int(reset.timeIntervalSince1970)
+        let window = windowID(reset)
         if l.isStale(now: now) {
             let key = "\(l.label)|reset|\(window)"
             guard l.kind == .session, l.percent >= alertThresholds[0], now.timeIntervalSince(reset) <= resetAlertWithin,
@@ -363,4 +378,58 @@ func pruneSent(_ sent: Set<String>, now: Date) -> Set<String> {
         guard let epoch = key.split(separator: "|").last.flatMap({ Double($0) }) else { return false }
         return Date(timeIntervalSince1970: epoch) > now.addingTimeInterval(-8 * 86400)
     }
+}
+
+// MARK: - status-line cache (fallback when the token has expired)
+
+/// Reads ~/Library/Application Support/Limitbar/latest.json, written by scripts/statusline-tee.py from Claude Code's
+/// status-line input: `{"written_at": <epoch s>, "rate_limits": {"five_hour"|"seven_day": {"used_percentage": 0-100,
+/// "resets_at": <epoch s>}}}` (documented at code.claude.com/docs/en/statusline; either window may be absent).
+func parseStatusLineCache(_ data: Data, now: Date = Date()) -> (limits: [Limit], writtenAt: Date)? {
+    guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let written = (obj["written_at"] as? NSNumber)?.doubleValue, written.isFinite,
+          let rl = obj["rate_limits"] as? [String: Any] else { return nil }
+    let writtenAt = Date(timeIntervalSince1970: written)
+    guard writtenAt <= now.addingTimeInterval(60) else { return nil }   // from the future: clock or file is wrong
+    func window(_ key: String, _ kind: Limit.Kind, _ label: String) -> Limit? {
+        guard let w = rl[key] as? [String: Any], let p = (w["used_percentage"] as? NSNumber)?.doubleValue, p.isFinite else { return nil }
+        return Limit(kind: kind, label: label, percent: p, resetsAt: parseReset(w["resets_at"], now: now), elevated: false)
+    }
+    let limits = [window("five_hour", .session, "Session"), window("seven_day", .weekly, "Weekly")].compactMap { $0 }
+    return limits.isEmpty ? nil : (limits, writtenAt)
+}
+
+// MARK: - bar text (Settings submenu toggles)
+
+/// How the menu bar title looks. Defaults: `52% · 34%` in Claude orange.
+struct BarStyle: Equatable {
+    var showSessionReset = false   // `52% · 34% · 1h28m`
+    var separator = true           // the mid-dot between parts; off: `52% 34%`
+    var percentSign = true         // off: `52 · 34`
+    var orange = true              // off: the menu bar's own text colour (colour is applied by the app)
+}
+
+struct BarSegment: Equatable { let text: String; let hot: Bool }
+
+/// "1h28m", "20m", "<1m": compact enough for the bar.
+func shortCountdown(to d: Date, now: Date) -> String {
+    let left = Int(min(max(d.timeIntervalSince(now), 0), maxResetAhead))
+    let days = left / 86400, h = (left % 86400) / 3600, m = (left % 3600) / 60
+    return days >= 1 ? "\(days)d\(h)h" : h >= 1 ? "\(h)h\(String(format: "%02d", m))m" : m >= 1 ? "\(m)m" : "<1m"
+}
+
+/// The bar title as segments, so the app can colour a hot number red on its own. Unknown or reset numbers are `–`.
+func barSegments(_ limits: [Limit], style: BarStyle, now: Date = Date()) -> [BarSegment] {
+    let (s, w) = barParts(limits, now: now)
+    func number(_ l: Limit?) -> BarSegment {
+        guard let l else { return BarSegment(text: "–", hot: false) }
+        let p = pct(l.percent)
+        return BarSegment(text: style.percentSign ? p : String(p.dropLast()), hot: l.isHot)
+    }
+    let gap = BarSegment(text: style.separator ? " · " : " ", hot: false)
+    var parts = [number(s), gap, number(w)]
+    if style.showSessionReset, let reset = s?.resetsAt {
+        parts += [gap, BarSegment(text: shortCountdown(to: reset, now: now), hot: false)]
+    }
+    return parts
 }

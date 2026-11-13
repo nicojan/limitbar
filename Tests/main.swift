@@ -161,7 +161,9 @@ check(runTool("/bin/sh", ["-c", "exit 44"], deadline: 5) == .exited(status: 44, 
 let started = Date()
 check(runTool("/bin/sleep", ["30"], deadline: 0.5) == .timedOut, "runTool: deadline kills a blocked child")
 check(Date().timeIntervalSince(started) < 5, "runTool: returns soon after the deadline")
-check(runTool("/bin/sh", ["-c", "trap '' TERM; sleep 30"], deadline: 0.5) == .timedOut, "runTool: a child ignoring SIGTERM is killed")
+let marker = "limitbar-test-\(getpid())"
+check(runTool("/usr/bin/perl", ["-e", "$SIG{TERM}='IGNORE'; sleep 30", marker], deadline: 0.5) == .timedOut, "runTool: a child ignoring SIGTERM times out")
+check(runTool("/usr/bin/pgrep", ["-f", marker], deadline: 5) == .exited(status: 1, output: Data()), "runTool: the SIGTERM-ignoring child is really gone (SIGKILL)")
 check(Date().timeIntervalSince(started) < 10, "runTool: SIGKILL fallback is quick")
 if case let .exited(0, big) = runTool("/bin/sh", ["-c", "head -c 200000 /dev/zero"], deadline: 5) { check(big.count == 200000, "runTool: large output") } else { check(false, "runTool: large output doesn't deadlock") }
 check(runTool("/nonexistent/tool", [], deadline: 1) == .couldNotRun, "runTool: missing tool")
@@ -171,7 +173,7 @@ check(keychainData(.exited(status: 0, output: Data("{\"a\":1}\n".utf8))) == .suc
 check(keychainData(.exited(status: 0, output: Data("7b7d".utf8))) == .success(Data("{}".utf8)), "keychain: hex decoded")
 check(keychainData(.exited(status: 44, output: Data())).failure?.message == "No Claude Code login found", "keychain: 44 no item")
 check(keychainData(.exited(status: 128, output: Data())).failure?.outcome == .accessDenied, "keychain: 128 cancelled pauses")
-check(keychainData(.timedOut).failure?.outcome == .accessDenied, "keychain: no answer pauses instead of re-prompting")
+check(keychainData(.timedOut).failure?.outcome == .keychainNoAnswer, "keychain: no answer pauses instead of re-prompting")
 check(keychainData(.timedOut).failure?.message.contains("Refresh") == true, "keychain: no answer says how to retry")
 check(keychainData(.exited(status: 36, output: Data())).failure?.message.contains("locked") == true, "keychain: 36 says locked")
 check(keychainData(.couldNotRun).failure?.outcome == .failure, "keychain: missing tool")
@@ -258,6 +260,55 @@ check(alertsDue([lim(.session, 85, resetsIn: -2 * 3600)], now: now, sent: []).is
 check(alertsDue([lim(.session, 85, resetsIn: nil)], now: now, sent: []).isEmpty, "alert: needs a reset time to know the window")
 let oldKey = "Session|80|\(Int(now.addingTimeInterval(-9 * 86400).timeIntervalSince1970))"
 check(pruneSent(Set(due85.flatMap { $0.keys }).union([oldKey]), now: now) == Set(due85.flatMap { $0.keys }), "alert keys for long-gone windows are pruned")
+
+// MARK: feature 3: status-line cache (shape from code.claude.com/docs/en/statusline: used_percentage 0-100, resets_at epoch s)
+let cacheNow = Date(timeIntervalSince1970: 1794540600)   // 10 min after it was written
+let cached = parseStatusLineCache(fixture("statusline-cache.json"), now: cacheNow)
+check(cached?.writtenAt == Date(timeIntervalSince1970: 1794540000.5), "cache: written_at")
+check(cached?.limits.map { "\($0.label)=\($0.percent)" } == ["Session=23.5", "Weekly=41.2"], "cache: session and weekly")
+check(cached?.limits.first?.resetsAt == Date(timeIntervalSince1970: 1794545400), "cache: epoch seconds reset")
+check(parseStatusLineCache(json(#"{"written_at":1794540000,"rate_limits":{"seven_day":{"used_percentage":5,"resets_at":1794960000}}}"#), now: cacheNow)?.limits.map { $0.label } == ["Weekly"], "cache: a window may be absent")
+check(parseStatusLineCache(json(#"{"written_at":1794540000,"rate_limits":{}}"#), now: cacheNow) == nil, "cache: no windows -> nil")
+check(parseStatusLineCache(json(#"{"rate_limits":{"five_hour":{"used_percentage":5}}}"#), now: cacheNow) == nil, "cache: no written_at -> nil")
+// Real file written by the wrapper from a live Claude Code status line (2026-11-12, Team plan).
+let realCache = parseStatusLineCache(fixture("statusline-cache-real.json"), now: Date(timeIntervalSince1970: 1794543600))
+check(realCache?.limits.map { "\($0.label)=\(Int($0.percent))" } == ["Session=76", "Weekly=38"], "cache: real capture parses")
+check(parseStatusLineCache(json("garbage"), now: cacheNow) == nil, "cache: garbage -> nil")
+check(parseStatusLineCache(json(#"{"written_at":1894540000,"rate_limits":{"five_hour":{"used_percentage":5}}}"#), now: cacheNow) == nil, "cache: written in the future -> nil")
+
+// MARK: bar style toggles (Settings submenu)
+func bar(_ l: [Limit], _ st: BarStyle) -> String { barSegments(l, style: st, now: now).map { $0.text }.joined() }
+let two = [lim(.session, 52, resetsIn: 88 * 60), lim(.weekly, 34, resetsIn: 86400)]
+check(bar(two, BarStyle()) == "52% · 34%", "bar default: \(bar(two, BarStyle()))")
+check(bar(two, BarStyle(showSessionReset: true)) == "52% · 34% · 1h28m", "bar with session reset")
+check(bar(two, BarStyle(separator: false)) == "52% 34%", "bar without mid-dot")
+check(bar(two, BarStyle(showSessionReset: true, separator: false)) == "52% 34% 1h28m", "bar without mid-dot, with reset")
+check(bar(two, BarStyle(percentSign: false)) == "52 · 34", "bar without % sign")
+check(bar([lim(.session, 52, resetsIn: 20 * 60), two[1]], BarStyle(showSessionReset: true)) == "52% · 34% · 20m", "reset under an hour")
+check(bar([lim(.session, 52, resetsIn: 30), two[1]], BarStyle(showSessionReset: true)) == "52% · 34% · <1m", "reset under a minute")
+check(bar([lim(.session, 52, resetsIn: -60), two[1]], BarStyle(showSessionReset: true)) == "– · 34%", "reset session: dash, no countdown")
+check(bar([lim(.session, 52, resetsIn: nil), two[1]], BarStyle(showSessionReset: true)) == "52% · 34%", "no reset time: no countdown")
+check(barSegments([lim(.session, 95, resetsIn: 600), two[1]], style: BarStyle(), now: now).map { $0.hot } == [true, false, false], "hot marks only its number")
+
+// MARK: review fixes
+// 1: resets_at jitters by under a second between replies (05:20:00.39 vs 05:19:59.9); same window, no repeat.
+let jittered = [lim(.session, 85, resetsIn: 3600 - 0.6)]
+check(alertsDue(jittered, now: now, sent: Set(due85.flatMap { $0.keys })).isEmpty, "alert: sub-second reset jitter is the same window")
+check(alertsDue([lim(.session, 85, resetsIn: 3600 + 1.2)], now: now, sent: Set(due85.flatMap { $0.keys })).isEmpty, "alert: jitter the other way too")
+// 2: at or over 100% the pace line must not read as calm.
+let full = pace(lim(.session, 100, resetsIn: 3.5 * 3600), now: now)
+check(full?.reached == true && full?.ahead == false, "pace: 100% is 'reached', not ahead or within")
+check(full.map { paceText($0, now: now, calendar: utc, locale: posix) } == "100% used — limit reached", "pace text at the limit")
+check(pace(lim(.session, 104, resetsIn: 3.5 * 3600), now: now)?.reached == true, "pace: over 100% is reached")
+// 4: a Keychain that didn't answer pauses, but the pause lifts once when the user is back (unlock / wake).
+let noAnswer = nextState(polled, after: .keychainNoAnswer)
+check(noAnswer.paused && noAnswer.liftsOnUnlock, "no answer pauses, liftable")
+check(!userReturned(noAnswer).paused, "user back: no-answer pause lifted")
+let denied = nextState(polled, after: .accessDenied)
+check(userReturned(denied).paused, "user back: an explicit deny stays paused (no dialog every unlock)")
+check(!nextState(noAnswer, after: .success).liftsOnUnlock, "success clears the flag")
+// 5: the clock moved backwards past the last attempt: fetch rather than wait for the clock to catch up.
+check(shouldFetch(PollState(lastAttempt: t0.addingTimeInterval(3600)), limits: [], now: t0), "clock moved back: due")
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
