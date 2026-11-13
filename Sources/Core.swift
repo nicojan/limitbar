@@ -14,11 +14,9 @@ struct Limit: Equatable {
 
     var isHot: Bool { elevated || percent >= 90 }
 
-    /// The window this number describes has reset since it was fetched, so the number is no longer true.
-    func isStale(fetchedAt: Date, now: Date) -> Bool {
-        guard let r = resetsAt else { return false }
-        return r > fetchedAt && r <= now
-    }
+    /// The window this number describes has reset, so the number is no longer true. Decided by the clock alone:
+    /// a reply sent just before a reset can arrive just after it, so the fetch time proves nothing.
+    func isStale(now: Date) -> Bool { resetsAt.map { $0 <= now } ?? false }
 }
 
 // MARK: - parsing
@@ -84,9 +82,9 @@ private func fromLegacyKeys(_ obj: [String: Any]) -> [Limit] {
 func parseUsage(_ data: Data) -> [Limit] {
     guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
     let primary = fromLimitsArray(obj["limits"] as? [[String: Any]] ?? [])
-    let missing = fromLegacyKeys(obj).filter { legacy in
-        !primary.contains { $0.kind == legacy.kind && ($0.kind != .scoped || $0.label == legacy.label) }
-    }
+    // Fill per kind. Legacy scoped labels come from key names ("Sonnet weekly") and the new ones from
+    // display_name ("Sonnet 4.5 weekly"), so they can't be matched by label: any scoped entry in `limits` wins.
+    let missing = fromLegacyKeys(obj).filter { legacy in !primary.contains { $0.kind == legacy.kind } }
     return (primary + missing).sorted { ($0.kind, $0.label) < ($1.kind, $1.label) }
 }
 
@@ -107,23 +105,23 @@ func countdown(to d: Date, now: Date = Date(), calendar: Calendar = .current, lo
 }
 
 /// One tooltip / menu line. A stale limit says its window reset instead of showing an old number.
-func describe(_ l: Limit, fetchedAt: Date, now: Date = Date()) -> String {
-    if l.isStale(fetchedAt: fetchedAt, now: now) { return "\(l.label) – · reset, waiting for new numbers" }
+func describe(_ l: Limit, now: Date = Date()) -> String {
+    if l.isStale(now: now) { return "\(l.label) – · reset, waiting for new numbers" }
     return "\(l.label) \(pct(l.percent)) · " + (l.resetsAt.map { countdown(to: $0, now: now) } ?? "no reset time")
 }
 
 /// Menu bar numbers: session and weekly. nil means unknown (missing, or its window reset since the fetch).
-func barParts(_ limits: [Limit], fetchedAt: Date, now: Date = Date()) -> (session: Limit?, weekly: Limit?) {
-    func current(_ k: Limit.Kind) -> Limit? { limits.first { $0.kind == k && !$0.isStale(fetchedAt: fetchedAt, now: now) } }
+func barParts(_ limits: [Limit], now: Date = Date()) -> (session: Limit?, weekly: Limit?) {
+    func current(_ k: Limit.Kind) -> Limit? { limits.first { $0.kind == k && !$0.isStale(now: now) } }
     return (current(.session), current(.weekly))
 }
 
 /// Hover text: when session and weekly reset, no percentages (the bar has them). Model-scoped limits are
 /// left to the click menu. `status` is appended only when something is wrong.
-func tooltip(_ limits: [Limit], fetchedAt: Date, now: Date = Date(), status: String?) -> String {
+func tooltip(_ limits: [Limit], now: Date = Date(), status: String?) -> String {
     let main = [Limit.Kind.session, .weekly].compactMap { k in limits.first { $0.kind == k } }
     let lines = main.map { l -> String in
-        if l.isStale(fetchedAt: fetchedAt, now: now) { return "\(l.label) reset, waiting for new numbers" }
+        if l.isStale(now: now) { return "\(l.label) reset, waiting for new numbers" }
         return l.resetsAt.map { "\(l.label) \(countdown(to: $0, now: now))" } ?? "\(l.label): no reset time"
     } + [status].compactMap { $0 }
     return lines.isEmpty ? "Limitbar" : lines.joined(separator: "\n")
@@ -135,22 +133,31 @@ enum Poll {
     static let base: TimeInterval = 300        // normal cadence
     static let maxBackoff: TimeInterval = 1800 // cap after repeated 429s
     static let staleOnOpen: TimeInterval = 60  // menu open refetches when the last attempt is older
+    static let retryDelays: [TimeInterval] = [15, 30, 60]  // after an offline failure (e.g. Wi-Fi not back after wake)
 }
 
 struct PollState: Equatable {
     var lastAttempt: Date?
     var interval: TimeInterval = Poll.base
     var paused = false   // Keychain access was refused: wait for a manual Refresh instead of re-prompting
+    var offlineFailures = 0   // consecutive offline failures; the first few retry quickly
+    var holdUntil: Date?      // after wake: the timer waits for the network to come back
 
     var backingOff: Bool { interval > Poll.base }
+    /// The quick retry delay in force, or nil when the normal interval applies.
+    var retryDelay: TimeInterval? {
+        guard !backingOff, offlineFailures >= 1, offlineFailures <= Poll.retryDelays.count else { return nil }
+        return Poll.retryDelays[offlineFailures - 1]
+    }
 }
 
 /// Should the timer fetch now? Due on the interval, or once right after a window resets
 /// (compared with the last attempt, so a failing fetch can't retry every tick).
 func shouldFetch(_ s: PollState, limits: [Limit], now: Date) -> Bool {
     guard !s.paused else { return false }
+    if let hold = s.holdUntil, now < hold { return false }
     guard let last = s.lastAttempt else { return true }
-    if now.timeIntervalSince(last) >= s.interval { return true }
+    if now.timeIntervalSince(last) >= (s.retryDelay ?? s.interval) { return true }
     guard !s.backingOff else { return false }
     return limits.contains { l in l.resetsAt.map { $0 > last && $0 <= now } ?? false }
 }
@@ -161,16 +168,82 @@ func shouldFetchOnOpen(_ s: PollState, now: Date) -> Bool {
     return s.lastAttempt.map { now.timeIntervalSince($0) >= Poll.staleOnOpen } ?? true
 }
 
-enum Outcome: Equatable { case success, rateLimited(retryAfter: TimeInterval?), accessDenied, failure }
+enum Outcome: Equatable { case success, rateLimited(retryAfter: TimeInterval?), accessDenied, offline(timedOut: Bool), failure }
 
-/// The next poll state after a fetch. Backoff holds until a success; access denied pauses polling.
+/// The next poll state after a fetch. Backoff holds until a success; access denied pauses polling;
+/// offline failures retry quickly a few times, then fall back to the normal cadence.
 func nextState(_ s: PollState, after o: Outcome) -> PollState {
+    var n = s   // a copy; the caller's state is untouched
     switch o {
-    case .success: return PollState(lastAttempt: s.lastAttempt, interval: Poll.base, paused: false)
+    case .success: n.interval = Poll.base; n.paused = false; n.offlineFailures = 0
     case .rateLimited(let after):
         let doubled = min(s.interval * 2, Poll.maxBackoff)
-        return PollState(lastAttempt: s.lastAttempt, interval: min(max(doubled, after ?? 0), Poll.maxBackoff), paused: false)
-    case .accessDenied: return PollState(lastAttempt: s.lastAttempt, interval: s.interval, paused: true)
-    case .failure: return s
+        n.interval = min(max(doubled, after ?? 0), Poll.maxBackoff); n.paused = false; n.offlineFailures = 0
+    case .accessDenied: n.paused = true
+    case .offline: n.offlineFailures = min(s.offlineFailures + 1, Poll.retryDelays.count + 1)
+    case .failure: n.offlineFailures = 0
+    }
+    return n
+}
+
+// MARK: - Keychain read via a child process
+
+/// How a child process ended.
+enum ToolRun: Equatable { case exited(status: Int32, output: Data), timedOut, couldNotRun }
+
+private final class Box { var data = Data() }
+
+/// Runs a tool and collects its stdout, but never waits past `deadline`: a child blocked on a dialog nobody
+/// answers is sent SIGTERM, then SIGKILL, and reported as `.timedOut`. stdin is closed so it can't wait on input.
+func runTool(_ path: String, _ args: [String], deadline: TimeInterval) -> ToolRun {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    p.standardInput = FileHandle.nullDevice
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
+    do { try p.run() } catch { return .couldNotRun }
+    let box = Box(), read = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .utility).async {   // drain while waiting: a full pipe would block the child
+        box.data = out.fileHandleForReading.readDataToEndOfFile(); read.signal()
+    }
+    guard exited.wait(timeout: .now() + deadline) == .success else {
+        p.terminate()
+        if exited.wait(timeout: .now() + 1) == .timedOut { kill(p.processIdentifier, SIGKILL); _ = exited.wait(timeout: .now() + 1) }
+        return .timedOut
+    }
+    return .exited(status: p.terminationStatus, output: read.wait(timeout: .now() + 2) == .success ? box.data : Data())
+}
+
+struct FetchFailure: Error, Equatable { let message: String; let outcome: Outcome
+    init(_ m: String, _ o: Outcome) { message = m; outcome = o } }
+
+/// `security -w` prints the secret as hex when it isn't plain text.
+func hexDecode(_ s: String) -> Data? {
+    guard s.count % 2 == 0, s.allSatisfy({ $0.isHexDigit }) else { return nil }
+    var bytes = [UInt8](); bytes.reserveCapacity(s.count / 2)
+    var i = s.startIndex
+    while i < s.endIndex { let j = s.index(i, offsetBy: 2); guard let b = UInt8(s[i..<j], radix: 16) else { return nil }; bytes.append(b); i = j }
+    return Data(bytes)
+}
+
+/// Maps a `security find-generic-password -w` run to the item's bytes or a failure.
+/// `security` exits with the low byte of the OSStatus: 44 errSecItemNotFound, 128 errSecUserCanceled,
+/// 36 errSecInteractionNotAllowed. No answer before the deadline means a dialog nobody answered (or a locked
+/// keychain): polling pauses until Refresh rather than putting the dialog back every 5 minutes.
+func keychainData(_ run: ToolRun) -> Result<Data, FetchFailure> {
+    switch run {
+    case .couldNotRun: return .failure(FetchFailure("Couldn't run the security tool", .failure))
+    case .timedOut: return .failure(FetchFailure("Keychain didn't answer — click Refresh to try again", .accessDenied))
+    case let .exited(0, data):
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .success(text.hasPrefix("{") ? Data(text.utf8) : hexDecode(text) ?? Data(text.utf8))
+    case .exited(44, _): return .failure(FetchFailure("No Claude Code login found", .failure))
+    case .exited(128, _): return .failure(FetchFailure("Keychain access denied — click Refresh to ask again", .accessDenied))
+    case .exited(36, _): return .failure(FetchFailure("Keychain is locked — unlock it, then click Refresh", .failure))
+    case let .exited(code, _): return .failure(FetchFailure("Keychain read failed (\(code))", .failure))
     }
 }

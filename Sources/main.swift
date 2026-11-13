@@ -12,6 +12,8 @@ enum Config {
     static let keychainService = "Claude Code-credentials"
     static let tick: TimeInterval = 60      // re-render countdowns, check whether a fetch is due
     static let timeout: TimeInterval = 10
+    static let keychainDeadline: TimeInterval = 15
+    static let stuckAfter: TimeInterval = 60  // an outstanding fetch older than this no longer blocks new ones
     static let wakeDelay: TimeInterval = 5  // let the network come back after sleep
     static let orange = NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: 1)  // Claude orange #D97757
 }
@@ -28,33 +30,9 @@ private let expiredMessage = "Login expired — run Claude Code to renew"
 /// Reads the item through /usr/bin/security, the tool Claude Code itself saves it with. The item's access list
 /// already trusts that tool, so there is no Keychain dialog, and rebuilding Limitbar (a new ad-hoc signature)
 /// doesn't bring one back either. Read-only: `find-generic-password -w` prints the secret and changes nothing.
+/// The deadline keeps a dialog nobody answers from blocking every later fetch.
 func readKeychainItem() -> Result<Data, FetchFailure> {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-    p.arguments = ["find-generic-password", "-s", Config.keychainService, "-w"]
-    let out = Pipe()
-    p.standardOutput = out
-    p.standardError = FileHandle.nullDevice
-    do { try p.run() } catch { return .failure(FetchFailure("Couldn't run the security tool", .failure)) }
-    let data = out.fileHandleForReading.readDataToEndOfFile()   // read before waiting: a full pipe would block the tool
-    p.waitUntilExit()
-    switch p.terminationStatus {
-    case 0:
-        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return .success(text.hasPrefix("{") ? Data(text.utf8) : hexDecode(text) ?? Data(text.utf8))
-    case 44: return .failure(FetchFailure("No Claude Code login found", .failure))
-    case 128: return .failure(FetchFailure("Keychain access denied — click Refresh to ask again", .accessDenied))
-    case let code: return .failure(FetchFailure("Keychain read failed (\(code))", .failure))
-    }
-}
-
-/// `security -w` prints the secret as hex when it isn't plain text.
-func hexDecode(_ s: String) -> Data? {
-    guard s.count % 2 == 0, s.allSatisfy({ $0.isHexDigit }) else { return nil }
-    var bytes = [UInt8](); bytes.reserveCapacity(s.count / 2)
-    var i = s.startIndex
-    while i < s.endIndex { let j = s.index(i, offsetBy: 2); guard let b = UInt8(s[i..<j], radix: 16) else { return nil }; bytes.append(b); i = j }
-    return Data(bytes)
+    keychainData(runTool("/usr/bin/security", ["find-generic-password", "-s", Config.keychainService, "-w"], deadline: Config.keychainDeadline))
 }
 
 func readCredential(now: Date = Date()) -> Result<(token: String, plan: String), FetchFailure> {
@@ -73,9 +51,6 @@ func readCredential(now: Date = Date()) -> Result<(token: String, plan: String),
     }
     return .success((token, (oauth["subscriptionType"] as? String ?? "").capitalized))
 }
-
-struct FetchFailure: Error { let message: String; let outcome: Outcome
-    init(_ m: String, _ o: Outcome) { message = m; outcome = o } }
 
 /// Refuses redirects so the bearer token can only ever go to the URL we asked for.
 final class NoRedirects: NSObject, URLSessionTaskDelegate {
@@ -119,7 +94,9 @@ private func request(token: String, plan: String, _ done: @escaping (FetchResult
         case 429:
             let after = (http?.value(forHTTPHeaderField: "Retry-After")).flatMap(TimeInterval.init)
             result = .failure("Rate limited — backing off", .rateLimited(retryAfter: after))
-        case 0: result = .failure(err.map { "Offline (\($0.localizedDescription))" } ?? "No response", .failure)
+        case 0:   // no HTTP reply: offline, DNS, refused, timed out (often a firewall silently dropping it)
+            let timedOut = (err as? URLError)?.code == .timedOut
+            result = .failure(err.map { "Offline (\($0.localizedDescription))" } ?? "No response", .offline(timedOut: timedOut))
         case let code: result = .failure("Usage service unavailable (\(code))", .failure)
         }
         DispatchQueue.main.async { done(result) }
@@ -137,6 +114,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var fetchedAt = Date.distantPast
     var poll = PollState()
     var inFlight = false
+    var inFlightSince = Date.distantPast
+    var generation = 0   // replies from a superseded fetch are dropped
     var menuOpen = false
     var timer: Timer?
 
@@ -149,30 +128,40 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: Config.tick, repeats: true) { [weak self] _ in self?.onTick() }
         timer?.tolerance = 5
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + Config.wakeDelay) { self?.onWake() }
+            guard let self else { return }
+            var p = self.poll; p.holdUntil = Date().addingTimeInterval(Config.wakeDelay); self.poll = p   // keep the overdue timer off
+            DispatchQueue.main.asyncAfter(deadline: .now() + Config.wakeDelay) { [weak self] in self?.onWake() }
         }
     }
 
+    /// Always re-renders, so countdowns and reset windows stay current even while a fetch is outstanding.
     func onTick() {
-        if shouldFetch(poll, limits: limits, now: Date()) { fetch() } else { render() }
+        if shouldFetch(poll, limits: limits, now: Date()) { fetch() }
+        render()
     }
 
     func onWake() {
         if shouldFetchOnOpen(poll, now: Date()) { fetch() } else { render() }
     }
 
-    /// Manual refresh: also lifts a Keychain-denied pause, so macOS asks once more.
+    /// Manual refresh: also lifts a Keychain-denied pause, so macOS asks once more, and supersedes
+    /// any fetch still outstanding instead of silently doing nothing.
     @objc func manualRefresh() {
-        poll = PollState(lastAttempt: poll.lastAttempt, interval: poll.interval, paused: false)
-        fetch()
+        var p = poll; p.paused = false; poll = p
+        fetch(force: true)
     }
 
-    func fetch() {
-        guard !inFlight else { return }
+    func fetch(force: Bool = false) {
+        // A fetch is bounded (Keychain deadline + request timeout), but never let one block the rest for long.
+        guard force || !inFlight || Date().timeIntervalSince(inFlightSince) > Config.stuckAfter else { return }
+        generation += 1
+        let gen = generation
         inFlight = true
-        poll = PollState(lastAttempt: Date(), interval: poll.interval, paused: poll.paused)
+        inFlightSince = Date()
+        var p = poll; p.lastAttempt = inFlightSince; poll = p
+        if menuOpen { rebuildMenu() }
         fetchUsage { [weak self] result in
-            guard let self else { return }
+            guard let self, gen == self.generation else { return }
             self.inFlight = false
             switch result {
             case let .limits(l, p):
@@ -184,6 +173,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self.render()
             if self.menuOpen { self.rebuildMenu() }
+            if let delay = self.poll.retryDelay {   // offline: try again soon rather than in 5 minutes
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.onTick() }
+            }
         }
     }
 
@@ -193,7 +185,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func render() {
         let now = Date()
-        let (s, w) = barParts(limits, fetchedAt: fetchedAt, now: now)
+        let (s, w) = barParts(limits, now: now)
         let title = NSMutableAttributedString()
         func add(_ text: String, hot: Bool = false) {
             title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: hot ? NSColor.systemRed : Config.orange]))
@@ -206,7 +198,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(w.map { pct($0.percent) } ?? "–", hot: w?.isHot ?? false)
             if error != nil { add(" !") }   // showing last good values
         }
-        let tip = tooltip(limits, fetchedAt: fetchedAt, now: now, status: error)
+        let tip = tooltip(limits, now: now, status: error)
         item.button?.attributedTitle = title
         item.button?.toolTip = tip
         item.button?.setAccessibilityLabel("Claude limits. " + tip.replacingOccurrences(of: "\n", with: ". "))
@@ -225,7 +217,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         para.tabStops = [NSTextTab(textAlignment: .right, location: 130), NSTextTab(textAlignment: .left, location: 145)]
         let now = Date()
         for l in limits {
-            let stale = l.isStale(fetchedAt: fetchedAt, now: now)
+            let stale = l.isStale(now: now)
             let reset = stale ? "reset, waiting for new numbers" : l.resetsAt.map { countdown(to: $0, now: now) } ?? "no reset time"
             let base: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: para, .foregroundColor: NSColor.labelColor]
             let row = NSMutableAttributedString(string: "\(l.label)\t", attributes: base)
@@ -241,6 +233,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let df = DateFormatter(); df.setLocalizedDateFormatFromTemplate("jj:mm")
         let when = fetchedAt == .distantPast ? (inFlight ? "Loading…" : "Not loaded yet") : "Updated \(df.string(from: fetchedAt))"
         menu.addItem(info(plan.isEmpty ? when : "\(when) · \(plan)"))
+        if inFlight && fetchedAt != .distantPast { menu.addItem(info("Refreshing…")) }
         if let e = error { menu.addItem(info("⚠︎ " + e)) }
 
         menu.addItem(.separator())
@@ -291,9 +284,9 @@ if CommandLine.arguments.contains("--once") {
     fetchUsage { result in
         switch result {
         case let .limits(l, p):
-            let (s, w) = barParts(l, fetchedAt: Date())
+            let (s, w) = barParts(l)
             print("bar: \(s.map { pct($0.percent) } ?? "–") · \(w.map { pct($0.percent) } ?? "–")   plan: \(p)")
-            l.forEach { print(describe($0, fetchedAt: Date())) }   // every limit, as the click menu lists them
+            l.forEach { print(describe($0)) }   // every limit, as the click menu lists them
             exit(0)
         case let .failure(msg, _): print("error: \(msg)"); exit(1)
         }

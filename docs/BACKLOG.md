@@ -4,16 +4,9 @@ From a code review on 2026-11-12 (independent bug hunt plus a UX/feature pass) a
 
 ## Bugs
 
-### High
-
-1. **Permanent freeze if `security` blocks** (`Sources/main.swift:37-39`, `:155-156`, `:170`). `readDataToEndOfFile()` / `waitUntilExit()` have no deadline. If the read hangs on a SecurityAgent dialog (locked keychain, or Claude Code re-creating the item so its access list no longer trusts `/usr/bin/security`), `inFlight` stays true forever: every fetch, including Refresh, no-ops; `onTick` takes the fetch branch and never re-renders, so countdowns freeze and reset sessions keep old numbers. Fix: terminate the child after ~15 s and map it to a failure; make `onTick` always render; make Refresh visibly report or supersede a stuck attempt.
-
 ### Medium
 
-2. **Deny may not pause polling** (`main.swift:44-46`). Only exit 128 (`errSecUserCanceled`) maps to `.accessDenied`. A refused access-list read is plausibly `errSecAuthFailed` (-25293, `security` exit 51), which falls into the generic failure and re-prompts every 5 min. Fix: treat 51 as denied too; give 36 (`errSecInteractionNotAllowed`) a "Keychain is locked" message. Unverified which code Deny produces; check by testing.
-3. **Wake leaves "Offline" for 5 minutes** (`main.swift:150-161`, `Core.swift:153-156`). One attempt 5 s after wake; Wi-Fi often isn't back, it fails with -1009, and the next try is 300 s later. The overdue 60 s timer can also fire inside the grace window, making `wakeDelay` useless. Fix: short retry backoff after wake or any offline error (e.g. 15 s, 30 s, 60 s, then normal), or `waitsForConnectivity` / `NWPathMonitor`; keep the timer from fetching during the post-wake grace window.
-4. **A fetch that straddles a reset shows the old number as current** (`Core.swift:18-21`, `main.swift:178`). `fetchedAt` is taken when the reply arrives, but `isStale` needs `resetsAt > fetchedAt`. Request at 05:19:59, reset at 05:20:00, reply at 05:20:01: the old 93% shows as live with "resetting now", indefinitely if the next fetch fails. Fix: treat any `resetsAt <= now` as stale regardless of fetch time (simplest), or stamp `fetchedAt` with the request start.
-5. **Scoped limit can appear twice** (`Core.swift:77`, `:88`). Legacy dedupe matches labels exactly; legacy labels come from key names (`seven_day_sonnet` → "Sonnet weekly"), new ones from `display_name` ("Sonnet 4.5"). Fix: if `limits` has any `weekly_scoped` entry, drop all legacy scoped entries; fill from legacy per kind, not per label. Add a test with mismatched names.
+2. **Deny may not pause polling** (`keychainData` in `Core.swift`). Only exit 128 (`errSecUserCanceled`) maps to `.accessDenied`; a refused access-list read is plausibly `errSecAuthFailed` (-25293, exit 51), which would fall into the generic failure and re-prompt every 5 min. **Waiting on one measurement:** which code `security` returns when Deny is clicked. Measured on 2026-11-12: no answer → `security` blocks until killed (now handled by the 15 s deadline, which pauses polling); item not found → 44. The Deny click itself couldn't be automated (no assistive access) and two attempts were answered with Allow. Run the throwaway-keychain probe (`security find-generic-password` on an item that trusts only `/usr/bin/true`, click Deny), then map that code to `.accessDenied` with a test.
 
 ### Low
 
