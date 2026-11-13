@@ -21,7 +21,7 @@ A line is added below only when something is wrong, such as an expired login.
 
 **Settings** is one small window where every change applies at once:
 
-- **Menu bar**: show when the session resets (`52% · 34% · 1h28m`), the mid-dot between numbers, the % sign, and Claude orange (off: the menu bar's own colour; hot limits stay red), with a live preview.
+- **Menu bar**: show when the session resets (`52% · 34% · 1h28m`), the mid-dot between numbers, the % sign, and Claude orange (off: the menu bar's own colour; hot limits stay red), with a live preview coloured exactly like the bar.
 - **Notifications**: off until you turn them on (macOS asks permission the first time). Then each limit, Fable weekly included, has its own switch and its own percentages, `80, 95` by default; each notifies once per window. A separate switch sends "Session reset" when a session that passed its first percentage resets.
 - **General**: Start at login.
 

@@ -15,6 +15,31 @@ func claudeOrange(alpha: CGFloat) -> NSColor {
     }
 }
 
+/// Bar text opacity when its numbers may be out of date.
+let barDimAlpha: CGFloat = 0.5
+
+/// The colour of one bar segment, in the bar and in the Settings preview alike. `alpha` dims stale numbers.
+/// System colours are resolved inside the provider: `labelColor.withAlphaComponent(_:)` called up front freezes
+/// to the appearance current at that moment, which drew white text on a light background.
+func barColor(_ ink: BarInk, alpha: CGFloat) -> NSColor {
+    switch ink {
+    case .orange: return claudeOrange(alpha: alpha)
+    case .hot: return resolvedLater(.systemRed, alpha: alpha)
+    case .plain: return resolvedLater(.labelColor, alpha: alpha)
+    }
+}
+
+private func resolvedLater(_ base: NSColor, alpha: CGFloat) -> NSColor {
+    NSColor(name: nil) { appearance in
+        var c = base
+        appearance.performAsCurrentDrawingAppearance { c = (base.usingColorSpace(.sRGB) ?? base).withAlphaComponent(base.alphaComponent * alpha) }
+        return c
+    }
+}
+
+/// What the bar would show for a style: its segments and whether it is dimmed.
+struct BarPreview { let segments: [BarSegment]; let dimmed: Bool }
+
 /// Preferences in UserDefaults. A key that was never set keeps the default.
 enum Prefs {
     private static let d = UserDefaults.standard
@@ -40,12 +65,12 @@ final class SettingsModel: ObservableObject {
     @Published var notificationsOn: Bool
     @Published var loginOn: Bool
     let labels: [String]
-    let preview: (BarStyle) -> String
+    let preview: (BarStyle) -> BarPreview
     private let changed: () -> Void
     private let setNotifications: (Bool, @escaping (Bool) -> Void) -> Void
     private let setLogin: (Bool) -> Bool
 
-    init(labels: [String], notificationsOn: Bool, loginOn: Bool, preview: @escaping (BarStyle) -> String, changed: @escaping () -> Void,
+    init(labels: [String], notificationsOn: Bool, loginOn: Bool, preview: @escaping (BarStyle) -> BarPreview, changed: @escaping () -> Void,
          setNotifications: @escaping (Bool, @escaping (Bool) -> Void) -> Void, setLogin: @escaping (Bool) -> Bool) {
         style = Prefs.style(); notify = Prefs.notify()
         self.labels = labels; self.notificationsOn = notificationsOn; self.loginOn = loginOn
@@ -74,10 +99,7 @@ struct SettingsView: View {
                 Toggle("Mid-dot between numbers", isOn: $model.style.separator)
                 Toggle("Show % sign", isOn: $model.style.percentSign)
                 Toggle("Claude orange (off: menu bar colour)", isOn: $model.style.orange)
-                LabeledContent("Preview") {
-                    Text(model.preview(model.style)).font(.body.monospacedDigit())
-                        .foregroundColor(model.style.orange ? Color(nsColor: claudeOrange(alpha: 1)) : .primary)
-                }
+                LabeledContent("Preview") { previewText(model.preview(model.style), style: model.style) }
             }
             Section {
                 Toggle("Send notifications", isOn: model.notificationsBinding)
@@ -101,6 +123,15 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Segment by segment, coloured exactly as the bar colours them.
+    func previewText(_ p: BarPreview, style: BarStyle) -> Text {
+        let alpha: CGFloat = p.dimmed ? barDimAlpha : 1
+        return p.segments.reduce(Text("")) { text, seg in
+            text + Text(seg.text).foregroundColor(Color(nsColor: barColor(barInk(seg, style: style), alpha: alpha)))
+        }
+        .font(.body.monospacedDigit())
     }
 }
 

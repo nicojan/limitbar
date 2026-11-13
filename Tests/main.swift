@@ -289,6 +289,10 @@ check(bar([lim(.session, 52, resetsIn: 30), two[1]], BarStyle(showSessionReset: 
 check(bar([lim(.session, 52, resetsIn: -60), two[1]], BarStyle(showSessionReset: true)) == "– · 34%", "reset session: dash, no countdown")
 check(bar([lim(.session, 52, resetsIn: nil), two[1]], BarStyle(showSessionReset: true)) == "52% · 34%", "no reset time: no countdown")
 check(barSegments([lim(.session, 95, resetsIn: 600), two[1]], style: BarStyle(), now: now).map { $0.hot } == [true, false, false], "hot marks only its number")
+// One colour rule for the bar and the Settings preview: hot red; the rest orange or the menu bar colour.
+let hotFirst = barSegments([lim(.session, 95, resetsIn: 600), two[1]], style: BarStyle(), now: now)
+check(hotFirst.map { barInk($0, style: BarStyle()) } == [.hot, .orange, .orange], "ink: hot red, rest orange")
+check(hotFirst.map { barInk($0, style: BarStyle(orange: false)) } == [.hot, .plain, .plain], "ink: hot red, rest plain with orange off")
 
 // MARK: review fixes
 // 1: resets_at jitters by under a second between replies (05:20:00.39 vs 05:19:59.9); same window, no repeat.

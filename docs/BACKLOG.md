@@ -4,7 +4,6 @@ Open work only; fixed items are deleted. Everything from the 2026-11-12 review i
 
 ## Next
 
-- **Settings preview colour doesn't match the bar.** The bar colours each number on its own (a hot limit red, the rest orange or the menu bar colour, all dimmed when stale); the preview in `Sources/Settings.swift` (`LabeledContent("Preview")`) draws the whole string in one colour, so a hot `83` shows red in the bar but plain in the preview (seen 2026-11-12 with Claude orange off: bar `83` red, `39 42m` white; preview all white). Fix: build the preview from `barSegments` per segment with the same colour rule as `App.render()` — ideally one shared function for both, so they can't drift.
 - **App icon.** The bundle has none (`Info.plist` has no `CFBundleIconFile`; `build.sh` copies no `.icns`).
 - **Distribution.** Today it is build-from-source only (ad-hoc signed, `./build.sh`). Wanted: a `.dmg`, built-in updates, and `brew install`, following what Chorus does (`/Volumes/n1TB/Personal/Projects/dev/Chorus/release/DISTRIBUTION.md`, `release/homebrew/`, `release/appcast-worker/`, `docs/appcast.xml`). This changes the spec's "Signed/notarized release binaries" non-goal and the "no dependencies" claim if Sparkle comes in; decide and update both.
 

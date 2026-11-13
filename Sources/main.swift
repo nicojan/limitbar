@@ -14,7 +14,6 @@ enum Config {
     static let tick: TimeInterval = 60      // re-render countdowns, check whether a fetch is due
     static let timeout: TimeInterval = 10
     static let keychainDeadline: TimeInterval = 15
-    static let dimAlpha: CGFloat = 0.5       // bar text when its numbers may be out of date
     static let statusLineCache = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Limitbar/latest.json")
     static let stuckAfter: TimeInterval = 60  // an outstanding fetch older than this no longer blocks new ones
@@ -272,20 +271,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
+    func dimmed(_ now: Date = Date()) -> Bool { barDimmed(fetchedAt: fetchedAt, now: now, failing: error != nil) }
+
     func render() {
         let now = Date()
         // Dimmed when the numbers may be out of date (the menu says why), instead of a cryptic marker.
-        let alpha: CGFloat = barDimmed(fetchedAt: fetchedAt, now: now, failing: error != nil) ? Config.dimAlpha : 1
+        let alpha: CGFloat = dimmed(now) ? barDimAlpha : 1
+        let style = self.style
+        let segments = limits.isEmpty ? [BarSegment(text: error == nil ? "…" : "—", hot: false)] : barSegments(limits, style: style, now: now)
         let title = NSMutableAttributedString()
-        func add(_ text: String, hot: Bool = false) {
-            let color = hot ? NSColor.systemRed.withAlphaComponent(alpha)
-                : style.orange ? claudeOrange(alpha: alpha) : NSColor.labelColor.withAlphaComponent(alpha)
-            title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
-        }
-        if limits.isEmpty {
-            add(error == nil ? "…" : "—")
-        } else {
-            barSegments(limits, style: style, now: now).forEach { add($0.text, hot: $0.hot) }
+        for seg in segments {
+            title.append(NSAttributedString(string: seg.text, attributes: [.font: font, .foregroundColor: barColor(barInk(seg, style: style), alpha: alpha)]))
         }
         let tip = tooltip(limits, now: now, status: error?.text)
         item.button?.attributedTitle = title
@@ -353,8 +349,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let model = SettingsModel(
             labels: notifyLabels(limits), notificationsOn: notifier.enabled, loginOn: SMAppService.mainApp.status == .enabled,
             preview: { [weak self] st in
-                let sample = self.map { barSegments($0.limits.isEmpty ? Self.sampleLimits : $0.limits, style: st) } ?? []
-                return sample.map { $0.text }.joined()
+                guard let self else { return BarPreview(segments: [], dimmed: false) }
+                // With no numbers yet the preview shows sample ones, bright; otherwise exactly what the bar shows.
+                if self.limits.isEmpty { return BarPreview(segments: barSegments(Self.sampleLimits, style: st), dimmed: false) }
+                return BarPreview(segments: barSegments(self.limits, style: st), dimmed: self.dimmed())
             },
             changed: { [weak self] in self?.render(); self?.rebuildMenu(); self?.notifier.check(self?.limits ?? []) },
             setNotifications: { [weak self] on, done in self?.notifier.set(on, done) },

@@ -450,6 +450,14 @@ struct BarStyle: Equatable {
 
 struct BarSegment: Equatable { let text: String; let hot: Bool }
 
+/// Which colour a bar segment gets. The bar and the Settings preview both use this (via `barColor` in
+/// Settings.swift), so they can't drift. Dimming when stale is applied on top, to every segment alike.
+enum BarInk: Equatable { case hot, orange, plain }
+
+func barInk(_ segment: BarSegment, style: BarStyle) -> BarInk {
+    segment.hot ? .hot : style.orange ? .orange : .plain
+}
+
 /// "1h28m", "20m", "<1m": compact enough for the bar.
 func shortCountdown(to d: Date, now: Date) -> String {
     let left = Int(min(max(d.timeIntervalSince(now), 0), maxResetAhead))
