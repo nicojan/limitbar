@@ -310,5 +310,46 @@ check(!nextState(noAnswer, after: .success).liftsOnUnlock, "success clears the f
 // 5: the clock moved backwards past the last attempt: fetch rather than wait for the clock to catch up.
 check(shouldFetch(PollState(lastAttempt: t0.addingTimeInterval(3600)), limits: [], now: t0), "clock moved back: due")
 
+// MARK: per-limit notification settings
+check(cleanThresholds([95, 80, 80, 0, 101, -5, .nan, 79.6]) == [80, 95], "thresholds: rounded, deduped, 1-100, sorted")
+var ns = NotifySettings()
+check(ns.rule(for: "Fable weekly") == LimitAlert(on: true, thresholds: [80, 95]), "default rule for any limit: 80 and 95")
+ns.limits["Weekly"] = LimitAlert(on: false, thresholds: [80, 95])
+ns.limits["Session"] = LimitAlert(on: true, thresholds: [50])
+let mixed = [lim(.session, 60, resetsIn: 3600), lim(.weekly, 99, resetsIn: 86400)]
+check(alertsDue(mixed, now: now, sent: [], settings: ns).map { $0.title } == ["Session at 50%"], "per-limit: custom threshold, weekly off")
+ns.limits["Session"] = LimitAlert(on: true, thresholds: [])
+check(alertsDue(mixed, now: now, sent: [], settings: ns).isEmpty, "per-limit: no thresholds means no alerts")
+// Session reset follows the session's lowest threshold, and has its own switch.
+var resetRule = NotifySettings(); resetRule.limits["Session"] = LimitAlert(on: true, thresholds: [60, 90])
+check(alertsDue([lim(.session, 65, resetsIn: -30)], now: now, sent: [], settings: resetRule).map { $0.title } == ["Session reset"], "reset notice after the session's first threshold")
+check(alertsDue([lim(.session, 55, resetsIn: -30)], now: now, sent: [], settings: resetRule).isEmpty, "no reset notice below it")
+resetRule.sessionReset = false
+check(alertsDue([lim(.session, 65, resetsIn: -30)], now: now, sent: [], settings: resetRule).isEmpty, "reset notice can be turned off")
+// Persisted as JSON; unreadable data falls back to defaults rather than silencing everything.
+let encoded = try! JSONEncoder().encode(ns)
+check(NotifySettings.decode(encoded) == ns, "settings round-trip")
+check(NotifySettings.decode(Data("junk".utf8)) == NotifySettings(), "bad settings data -> defaults")
+check(NotifySettings.decode(nil) == NotifySettings(), "no settings -> defaults")
+check(notifyLabels(real) == ["Session", "Weekly", "Fable weekly"], "settings list every known limit")
+check(notifyLabels([]) == ["Session", "Weekly"], "settings always list session and weekly")
+
+// Review 2 #6: a reset near a 10-minute edge (04:55:00 +/- 0.6 s) is still one window.
+let edgeNow = parseDate("2026-11-13T04:00:00Z")!
+let edgeA = Limit(kind: .session, label: "Session", percent: 85, resetsAt: parseDate("2026-11-13T04:54:59.4Z"), elevated: false)
+let edgeB = Limit(kind: .session, label: "Session", percent: 85, resetsAt: parseDate("2026-11-13T04:55:00.4Z"), elevated: false)
+let edgeSent = Set(alertsDue([edgeA], now: edgeNow, sent: []).flatMap { $0.keys })
+check(alertsDue([edgeB], now: edgeNow, sent: edgeSent).isEmpty, "alert: jitter across a rounding edge is one window")
+check(alertsDue([lim(.session, 85, resetsIn: 3600 + 5 * 3600)], now: now, sent: edgeSent.union(Set(due85.flatMap { $0.keys }))).count == 1, "alert: the next window still notifies")
+
+// Review 2 #1: status-line numbers merge per window; an idle session re-sending old numbers never wins.
+let apiNow = [lim(.session, 70, resetsIn: 3600), lim(.weekly, 40, resetsIn: 86400), lim(.scoped, 5, resetsIn: 86400, label: "Fable weekly")]
+check(mergeStatusLine(apiNow, [lim(.session, 40, resetsIn: 3600 + 0.5)]) == nil, "merge: same window, lower % (idle session) loses")
+let higher = mergeStatusLine(apiNow, [lim(.session, 76, resetsIn: 3600)])
+check(higher?.map { "\($0.label)=\(Int($0.percent))" } == ["Session=76", "Weekly=40", "Fable weekly=5"], "merge: same window, higher % wins; others kept")
+check(mergeStatusLine(apiNow, [lim(.session, 3, resetsIn: 3600 + 5 * 3600)])?.first?.percent == 3, "merge: a later window wins even at a lower %")
+check(mergeStatusLine(apiNow, [lim(.session, 90, resetsIn: 3600 - 5 * 3600)]) == nil, "merge: an earlier window loses")
+check(mergeStatusLine([], [lim(.weekly, 12, resetsIn: 86400)])?.map { $0.label } == ["Weekly"], "merge: fills a missing limit")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

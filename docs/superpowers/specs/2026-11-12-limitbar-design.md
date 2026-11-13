@@ -10,14 +10,14 @@ A macOS menu bar tool that shows, at a glance, how much of the Claude session (5
 
 - Menu bar shows the two numbers that matter, always visible: `52% · 34%` (session · weekly).
 - Hover shows when the session and weekly limits reset (countdown and local time).
-- Click opens a native menu with every limit (percent and reset) plus Refresh, Start at Login, Quit.
+- Click opens a native menu with every limit (percent and reset), pace, Refresh, Settings…, Quit.
 - Uses the login Claude Code already keeps; no separate sign-in, no stored secrets of its own.
 
 ## Non-goals
 
 - Token counting from local transcripts, per-model charts, cost estimates, forecasts beyond the straight-line pace projection.
 - Other providers (Codex, Cursor, …).
-- Settings window, Dock icon. (Notifications were a non-goal until Nico asked for them on 2026-11-12; they are a single menu toggle, off by default.)
+- Dock icon. (Notifications and a settings window were non-goals until Nico asked for them on 2026-11-12: per-limit notification percentages needed more than menu toggles.)
 - Signed/notarized release binaries. Build from source with one script.
 
 ## Anti-goals
@@ -46,8 +46,9 @@ Picked 1: Nico chose the recommendation.
 
 **Files**
 
-- `Sources/Core.swift` — pure, testable: `Limit` model, `parseUsage(Data) -> [Limit]` (prefers `limits`; fills any limit it lacks from `five_hour` / `seven_day` / non-null `seven_day_*`; skips unknown kinds), `countdown`, `barParts`, `barSegments` / `BarStyle`, `tooltip`, `updatedText`, `pace` / `paceText`, `alertsDue`, `status` / `barDimmed`, `parseStatusLineCache`, the Keychain child-process runner with its deadline (`runTool`, `keychainData`), and the poll scheduler (`PollState`, `shouldFetch`, `shouldFetchOnOpen`, `nextState`).
-- `Sources/main.swift` — AppKit: status item, Keychain read, async fetch, timers, menu, login item.
+- `Sources/Core.swift` — pure, testable: `Limit` model, `parseUsage(Data) -> [Limit]` (prefers `limits`; fills any limit it lacks from `five_hour` / `seven_day` / non-null `seven_day_*`; skips unknown kinds), `countdown`, `barParts`, `barSegments` / `BarStyle`, `tooltip`, `updatedText`, `pace` / `paceText`, `alertsDue` / `NotifySettings` / `cleanThresholds`, `mergeStatusLine`, `status` / `barDimmed`, `parseStatusLineCache`, the Keychain child-process runner with its deadline (`runTool`, `keychainData`), and the poll scheduler (`PollState`, `shouldFetch`, `shouldFetchOnOpen`, `nextState`).
+- `Sources/main.swift` — AppKit: status item, Keychain read, async fetch, timers, menu, login item, notifications.
+- `Sources/Settings.swift` — the settings window (SwiftUI in an `NSWindow`), preferences in `UserDefaults`, the orange colour.
 - `Tests/main.swift` — plain assertion runner compiled with `Core.swift`; `./test.sh` runs it.
 - `build.sh` — compiles, bundles `Limitbar.app`, ad-hoc signs, installs to `~/Applications`, relaunches, and installs the status-line wrapper to `~/.local/bin/limitbar-statusline`.
 - `scripts/statusline-tee.py` — the Claude Code status-line wrapper (see Status-line fallback).
@@ -77,8 +78,7 @@ Weekly: 34% used, 15% of window elapsed — ahead of pace, runs out ~Mon 10:05
 Updated 5 min ago · Team        (or the error, e.g. "Login expired — run Claude Code to renew")
 Refresh                     ⌘R
 Open Usage Page…
-Settings                     ▸  Show Session Reset in Bar · Mid-dot Separator ✓ · Show % Sign ✓ · Claude Orange ✓
-                                ── Notify at 80% and 95% · Start at Login ✓
+Settings…                   ⌘,
 Quit Limitbar               ⌘Q
 ```
 
@@ -88,11 +88,11 @@ Quit Limitbar               ⌘Q
 
 **Pace** (menu only, session and weekly): used % against elapsed % of the window (session 5 h, weekly 7 d; elapsed = window − time to reset). When used is ahead of elapsed, the straight-line projection hits 100% before the reset, and the menu says when: "52% used, 30% of window elapsed — ahead of pace, runs out ~21:40" (weekday added when not today). Before 5% of the window has elapsed there is no projection. At or over 100% it says "limit reached" in the normal colour, never "within pace".
 
-**Notifications** (menu toggle "Notify at 80% and 95%", off by default, `UNUserNotificationCenter`, permission asked when first turned on): each limit, scoped ones included, notifies once per window at 80% and at 95% (jumping past both sends only 95%); "Session reset" when a session that reached 80% resets, but only within an hour of the reset, so a relaunch doesn't announce an old one. Sent keys (`label|threshold|window`, the reset time rounded to 10 minutes because `resets_at` jitters by under a second between replies) persist in `UserDefaults` and are pruned after 8 days.
+**Notifications** (off by default, `UNUserNotificationCenter`, permission asked when first turned on in Settings): each limit, scoped ones included, has its own on/off and its own percentages (default 80 and 95; whole numbers 1–100), and notifies once per window at each (jumping past several sends only the highest). "Session reset" (its own switch) fires when a session that passed its first percentage resets, but only within an hour of the reset, so a relaunch doesn't announce an old one. Sent keys (`label|threshold|reset epoch`) persist in `UserDefaults` and are pruned after 8 days; a window is matched with a 30-minute tolerance because `resets_at` jitters by under a second between replies.
 
-**Settings submenu** (no settings window; toggles persist in `UserDefaults`): Show Session Reset in Bar (`52% · 34% · 1h28m`, off by default), Mid-dot Separator (off: `52% 34%`), Show % Sign (off: `52 · 34`), Claude Orange (off: the menu bar's own text colour; hot limits stay red either way), Notify at 80% and 95%, Start at Login.
+**Settings window** (Settings… ⌘, in the click menu; one small grouped form, every change applies at once): Menu bar — show when the session resets (`52% · 34% · 1h28m`, off by default), mid-dot between numbers (off: `52% 34%`), % sign (off: `52 · 34`), Claude orange (off: the menu bar's own text colour; hot limits stay red either way), with a live preview. Notifications — master switch, then one row per limit (Session, Weekly, every scoped limit seen) with its percentages ("80, 95") and its own switch, and the session-reset switch. General — Start at login.
 
-**Status-line fallback**: Claude Code passes `rate_limits` (`five_hour` / `seven_day`, each `{used_percentage, resets_at}` in epoch seconds, either may be absent; documented at code.claude.com/docs/en/statusline) to custom status-line commands. `~/.local/bin/limitbar-statusline <existing command>` copies only that object plus `written_at` to `~/Library/Application Support/Limitbar/latest.json` (atomic rename), then runs the wrapped command with the same stdin and passes its output and exit status through; a failed copy never stops the wrapped command. When an API fetch fails, Limitbar takes session and weekly from that file if it was written after the last successful fetch (scoped limits keep their last API values), shows them dimmed, and the menu says "Updated 3 min ago · from Claude Code's status line". No token and no network are involved. The wrapper lives on the home volume so the status line works with this repo's drive unmounted.
+**Status-line fallback**: Claude Code passes `rate_limits` (`five_hour` / `seven_day`, each `{used_percentage, resets_at}` in epoch seconds, either may be absent; documented at code.claude.com/docs/en/statusline) to custom status-line commands. `~/.local/bin/limitbar-statusline '<existing command>'` copies only those two windows' percentage and reset time plus `written_at` to `~/Library/Application Support/Limitbar/latest.json` (0600, atomic rename, no temp file left on failure), then `exec`s the existing command (one argument through `/bin/sh -c`, several as argv) on the same stdin, so output, exit status and signals are unchanged; a failed copy never stops it. Whenever Limitbar's last fetch failed (expired token, paused, backing off), it re-reads the file when it changes and merges it per window: within the same window the higher percentage wins, across windows the later reset wins, so an idle session re-sending old numbers never replaces newer ones. Merged numbers show dimmed with "from Claude Code's status line" in the menu. No token and no network are involved. The wrapper lives on the home volume so the status line works with this repo's drive unmounted.
 
 **Start at Login**: `SMAppService.mainApp`; when macOS answers `.requiresApproval`, the item shows mixed state and opens Login Items settings.
 

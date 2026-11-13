@@ -11,7 +11,7 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 NEW="$WORK/Limitbar.app"
 mkdir -p "$NEW/Contents/MacOS"
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" \
-  Sources/Core.swift Sources/main.swift -o "$NEW/Contents/MacOS/Limitbar"
+  Sources/Core.swift Sources/Settings.swift Sources/main.swift -o "$NEW/Contents/MacOS/Limitbar"
 cp Info.plist "$NEW/Contents/Info.plist"
 codesign --force --sign - --identifier com.nicojan.limitbar "$NEW"
 

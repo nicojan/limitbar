@@ -346,29 +346,68 @@ struct Alert: Equatable {
     let body: String
 }
 
-let alertThresholds: [Double] = [80, 95]
+/// One limit's notification rule: on/off and the percentages that notify.
+struct LimitAlert: Codable, Equatable {
+    var on = true
+    var thresholds: [Double] = [80, 95]
+}
+
+/// Which limits notify and at what percentages, keyed by limit label ("Session", "Weekly", "Fable weekly").
+/// Limits without an entry use the default rule. The master switch lives with the permission, in the app.
+struct NotifySettings: Codable, Equatable {
+    var limits: [String: LimitAlert] = [:]
+    var sessionReset = true   // "Session reset" once a session passed its first threshold
+
+    func rule(for label: String) -> LimitAlert { limits[label] ?? LimitAlert() }
+
+    /// Unreadable or missing data gives the defaults, never a silent "notify nothing".
+    static func decode(_ data: Data?) -> NotifySettings {
+        data.flatMap { try? JSONDecoder().decode(NotifySettings.self, from: $0) } ?? NotifySettings()
+    }
+}
+
+/// Whole percentages from 1 to 100, without duplicates, ascending.
+func cleanThresholds(_ t: [Double]) -> [Double] {
+    Array(Set(t.filter { $0.isFinite }.map { $0.rounded() }.filter { $0 >= 1 && $0 <= 100 })).sorted()
+}
+
+/// The limits the settings window lists: session and weekly always, then every other limit seen.
+func notifyLabels(_ limits: [Limit]) -> [String] {
+    let others = limits.filter { $0.kind == .scoped }.map { $0.label }
+    return ["Session", "Weekly"] + others.filter { $0 != "Session" && $0 != "Weekly" }
+}
+
 let resetAlertWithin: TimeInterval = 3600   // a reset older than this (say, seen at relaunch) isn't news
+let sameWindowWithin: TimeInterval = 1800   // resets this close are one window; real windows are 5 h+ apart
 
-/// A window's identity for alert keys. `resets_at` jitters by under a second between replies (05:20:00.39 in one,
-/// 05:19:59.9 in the next), so it is rounded to 10 minutes; distinct windows are at least 5 hours apart.
-func windowID(_ reset: Date) -> Int { Int((reset.timeIntervalSince1970 / 600).rounded()) * 600 }
+/// `resets_at` jitters by under a second between replies (05:20:00.39 in one, 05:19:59.9 in the next), so a
+/// window is matched against sent keys with a tolerance rather than by exact value.
+private func alreadySent(_ prefix: String, _ reset: Date, _ sent: Set<String>) -> Bool {
+    sent.contains { key in
+        guard key.hasPrefix(prefix + "|"), let e = Double(key.dropFirst(prefix.count + 1)) else { return false }
+        return abs(e - reset.timeIntervalSince1970) <= sameWindowWithin
+    }
+}
 
-/// Notifications due now: each limit at 80% and 95%, once per window (the key carries the reset time), and
-/// "Session reset" when a session pushed past 80% resets. `sent` holds the keys already delivered.
-func alertsDue(_ limits: [Limit], now: Date, sent: Set<String>) -> [Alert] {
+/// Notifications due now: each enabled limit at each of its thresholds, once per window, and "Session reset"
+/// when a session that passed its first threshold resets. `sent` holds keys already delivered.
+func alertsDue(_ limits: [Limit], now: Date, sent: Set<String>, settings: NotifySettings = NotifySettings()) -> [Alert] {
     limits.compactMap { l -> Alert? in
         guard let reset = l.resetsAt else { return nil }
-        let window = windowID(reset)
+        let epoch = Int(reset.timeIntervalSince1970)
+        let rule = settings.rule(for: l.label)
+        let thresholds = cleanThresholds(rule.thresholds)
         if l.isStale(now: now) {
-            let key = "\(l.label)|reset|\(window)"
-            guard l.kind == .session, l.percent >= alertThresholds[0], now.timeIntervalSince(reset) <= resetAlertWithin,
-                  !sent.contains(key) else { return nil }
-            return Alert(keys: [key], title: "Session reset", body: "Your 5-hour session limit is fresh again.")
+            let prefix = "\(l.label)|reset"
+            guard l.kind == .session, settings.sessionReset, l.percent >= (thresholds.first ?? 80),
+                  now.timeIntervalSince(reset) <= resetAlertWithin, !alreadySent(prefix, reset, sent) else { return nil }
+            return Alert(keys: ["\(prefix)|\(epoch)"], title: "Session reset", body: "Your 5-hour session limit is fresh again.")
         }
-        let crossed = alertThresholds.filter { l.percent >= $0 }
-        let keys = crossed.map { "\(l.label)|\(Int($0))|\(window)" }
-        guard let top = crossed.last, let topKey = keys.last, !sent.contains(topKey) else { return nil }
-        return Alert(keys: keys, title: "\(l.label) at \(Int(top))%", body: "\(l.label) \(countdown(to: reset, now: now))")
+        guard rule.on else { return nil }
+        let crossed = thresholds.filter { l.percent >= $0 }
+        guard let top = crossed.last, !alreadySent("\(l.label)|\(Int(top))", reset, sent) else { return nil }
+        return Alert(keys: crossed.map { "\(l.label)|\(Int($0))|\(epoch)" }, title: "\(l.label) at \(Int(top))%",
+                     body: "\(l.label) \(countdown(to: reset, now: now))")
     }
 }
 
@@ -432,4 +471,20 @@ func barSegments(_ limits: [Limit], style: BarStyle, now: Date = Date()) -> [Bar
         parts += [gap, BarSegment(text: shortCountdown(to: reset, now: now), hot: false)]
     }
     return parts
+}
+
+/// Merges status-line numbers into the current ones, per limit kind. The status line can re-send an idle
+/// session's last-known numbers long after they were measured, so its write time proves nothing. Same window
+/// (resets within 30 min of each other): the higher percentage wins, since use within a window doesn't go down.
+/// Different windows: the later reset wins. nil when nothing from the status line wins.
+func mergeStatusLine(_ current: [Limit], _ cache: [Limit]) -> [Limit]? {
+    let winners = cache.filter { c in
+        guard let old = current.first(where: { $0.kind == c.kind }) else { return true }
+        guard let cr = c.resetsAt, let or = old.resetsAt else { return false }
+        if abs(cr.timeIntervalSince(or)) <= sameWindowWithin { return c.percent > old.percent }
+        return cr > or
+    }
+    guard !winners.isEmpty else { return nil }
+    let kinds = Set(winners.map { $0.kind })
+    return (winners + current.filter { !kinds.contains($0.kind) }).sorted { ($0.kind, $0.label) < ($1.kind, $1.label) }
 }

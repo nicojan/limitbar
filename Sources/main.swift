@@ -19,16 +19,6 @@ enum Config {
         .appendingPathComponent("Library/Application Support/Limitbar/latest.json")
     static let stuckAfter: TimeInterval = 60  // an outstanding fetch older than this no longer blocks new ones
     static let wakeDelay: TimeInterval = 5  // let the network come back after sleep
-    /// Claude orange #D97757 on a dark menu bar (4.5:1). On a light bar it would be 2.6:1, so a deeper tone of the
-    /// same orange, #B4532F (4.2:1), is used there. Resolved against the menu bar's own appearance.
-    /// Alpha is applied inside the provider, so the colour stays resolved against the bar at draw time.
-    static func orange(alpha: CGFloat) -> NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: alpha)
-                : NSColor(srgbRed: 0xB4 / 255.0, green: 0x53 / 255.0, blue: 0x2F / 255.0, alpha: alpha)
-        }
-    }
 }
 
 // MARK: - Keychain + network
@@ -119,8 +109,8 @@ private func request(token: String, plan: String, _ done: @escaping (FetchResult
 
 // MARK: - Notifications
 
-/// At 80% / 95% per limit and on a session reset, when turned on in the menu. Off by default; permission is
-/// asked the first time it's turned on. Sent keys persist, so a relaunch doesn't repeat a notification.
+/// Per-limit percentages (80% and 95% unless changed in Settings) and a session reset notice. Off by default;
+/// permission is asked the first time it's turned on. Sent keys persist, so a relaunch doesn't repeat a notification.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private let defaults = UserDefaults.standard
     private let enabledKey = "notificationsEnabled", sentKey = "sentAlerts"
@@ -132,8 +122,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Turning on asks for permission; if macOS refuses, it stays off and says where to allow it.
-    func toggle(_ done: @escaping () -> Void) {
-        guard !enabled else { defaults.set(false, forKey: enabledKey); done(); return }
+    func set(_ on: Bool, _ done: @escaping (Bool) -> Void) {
+        guard on else { defaults.set(false, forKey: enabledKey); done(false); return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             DispatchQueue.main.async {
                 self.defaults.set(granted, forKey: self.enabledKey)
@@ -144,7 +134,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                     if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
                     a.runModal()
                 }
-                done()
+                done(granted)
             }
         }
     }
@@ -152,7 +142,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func check(_ limits: [Limit], now: Date = Date()) {
         guard enabled else { return }
         let sent = Set(defaults.stringArray(forKey: sentKey) ?? [])
-        let due = alertsDue(limits, now: now, sent: sent)
+        let due = alertsDue(limits, now: now, sent: sent, settings: Prefs.notify())
         guard !due.isEmpty else { return }
         defaults.set(Array(pruneSent(sent.union(due.flatMap { $0.keys }), now: now)), forKey: sentKey)
         for alert in due {
@@ -212,6 +202,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Always re-renders, so countdowns and reset windows stay current even while a fetch is outstanding.
     func onTick() {
         notifier.check(limits)   // also catches a session reset on the clock, before new numbers replace it
+        if error != nil { useStatusLineCache() }   // also while paused or backing off, when no fetch runs
         if shouldFetch(poll, limits: limits, now: Date()) { fetch() }
         render()
     }
@@ -256,14 +247,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// When the API path fails (typically an expired token), take session and weekly from Claude Code's status
-    /// line, if scripts/statusline-tee.py has written them more recently than our last fetch. Scoped limits stay.
+    /// When the API path fails (expired token, paused, backing off), take what Claude Code's status line has seen,
+    /// merged per window so an idle session re-sending old numbers never replaces newer ones. Read only when the
+    /// file changed since the last look.
+    var statusLineSeen = Date.distantPast
     func useStatusLineCache() {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: Config.statusLineCache.path),
+              let modified = attrs[.modificationDate] as? Date, modified > statusLineSeen else { return }
+        statusLineSeen = modified
         guard let data = FileManager.default.contents(atPath: Config.statusLineCache.path),
-              let cache = parseStatusLineCache(data), cache.writtenAt > fetchedAt else { return }
-        let kinds = Set(cache.limits.map { $0.kind })
-        limits = (cache.limits + limits.filter { !kinds.contains($0.kind) }).sorted { ($0.kind, $0.label) < ($1.kind, $1.label) }
-        fetchedAt = cache.writtenAt
+              let cache = parseStatusLineCache(data), let merged = mergeStatusLine(limits, cache.limits) else { return }
+        limits = merged
+        fetchedAt = max(fetchedAt, cache.writtenAt)
         fromStatusLine = true
     }
 
@@ -284,7 +279,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let title = NSMutableAttributedString()
         func add(_ text: String, hot: Bool = false) {
             let color = hot ? NSColor.systemRed.withAlphaComponent(alpha)
-                : style.orange ? Config.orange(alpha: alpha) : NSColor.labelColor.withAlphaComponent(alpha)
+                : style.orange ? claudeOrange(alpha: alpha) : NSColor.labelColor.withAlphaComponent(alpha)
             title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
         }
         if limits.isEmpty {
@@ -345,50 +340,30 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(action("Refresh", #selector(manualRefresh), key: "r"))
         menu.addItem(action("Open Usage Page…", #selector(openPage)))
-        menu.addItem(settingsItem())
+        menu.addItem(action("Settings…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
         menu.addItem(action("Quit Limitbar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
     }
 
-    /// Settings live in a submenu of the click menu: toggles only, no settings window.
-    func settingsItem() -> NSMenuItem {
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-        func toggle(_ title: String, _ on: Bool, _ sel: Selector) {
-            let mi = action(title, sel); mi.state = on ? .on : .off; sub.addItem(mi)
-        }
-        toggle("Show Session Reset in Bar", style.showSessionReset, #selector(toggleSessionReset))
-        toggle("Mid-dot Separator", style.separator, #selector(toggleSeparator))
-        toggle("Show % Sign", style.percentSign, #selector(togglePercentSign))
-        toggle("Claude Orange", style.orange, #selector(toggleOrange))
-        sub.addItem(.separator())
-        toggle("Notify at 80% and 95%", notifier.enabled, #selector(toggleNotifications))
-        let login = action("Start at Login", #selector(toggleLogin))
-        switch SMAppService.mainApp.status {
-        case .enabled: login.state = .on
-        case .requiresApproval: login.state = .mixed; login.title = "Start at Login (approve in System Settings)"
-        default: login.state = .off
-        }
-        sub.addItem(login)
-        let mi = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
-        mi.submenu = sub
-        return mi
+    var style: BarStyle { Prefs.style() }
+
+    let settingsWindow = SettingsWindow()
+
+    @objc func openSettings() {
+        let model = SettingsModel(
+            labels: notifyLabels(limits), notificationsOn: notifier.enabled, loginOn: SMAppService.mainApp.status == .enabled,
+            preview: { [weak self] st in
+                let sample = self.map { barSegments($0.limits.isEmpty ? Self.sampleLimits : $0.limits, style: st) } ?? []
+                return sample.map { $0.text }.joined()
+            },
+            changed: { [weak self] in self?.render(); self?.rebuildMenu(); self?.notifier.check(self?.limits ?? []) },
+            setNotifications: { [weak self] on, done in self?.notifier.set(on, done) },
+            setLogin: { [weak self] on in self?.setLogin(on) ?? false })
+        settingsWindow.show(model)
     }
 
-    // MARK: bar style, persisted in UserDefaults
-
-    var style: BarStyle {
-        let d = UserDefaults.standard
-        func flag(_ k: String, _ dflt: Bool) -> Bool { d.object(forKey: k) == nil ? dflt : d.bool(forKey: k) }
-        let base = BarStyle()
-        return BarStyle(showSessionReset: flag("barSessionReset", base.showSessionReset), separator: flag("barSeparator", base.separator),
-                        percentSign: flag("barPercentSign", base.percentSign), orange: flag("barOrange", base.orange))
-    }
-    func flip(_ key: String, _ current: Bool) { UserDefaults.standard.set(!current, forKey: key); render(); rebuildMenu() }
-    @objc func toggleSessionReset() { flip("barSessionReset", style.showSessionReset) }
-    @objc func toggleSeparator() { flip("barSeparator", style.separator) }
-    @objc func togglePercentSign() { flip("barPercentSign", style.percentSign) }
-    @objc func toggleOrange() { flip("barOrange", style.orange) }
+    static let sampleLimits = [Limit(kind: .session, label: "Session", percent: 52, resetsAt: Date().addingTimeInterval(88 * 60), elevated: false),
+                               Limit(kind: .weekly, label: "Weekly", percent: 34, resetsAt: Date().addingTimeInterval(6 * 86400), elevated: false)]
 
     func info(_ text: String) -> NSMenuItem {
         let mi = NSMenuItem(title: text, action: nil, keyEquivalent: ""); mi.isEnabled = false; return mi
@@ -397,25 +372,24 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mi = NSMenuItem(title: title, action: sel, keyEquivalent: key); mi.target = target ?? self; return mi
     }
 
-    @objc func toggleNotifications() { notifier.toggle { [weak self] in self?.rebuildMenu(); self?.notifier.check(self?.limits ?? []) } }
-
     @objc func openPage() { NSWorkspace.shared.open(Config.usagePage) }
 
-    @objc func toggleLogin() {
+    /// Returns whether Start at Login is on afterwards. Needing approval opens Login Items settings.
+    func setLogin(_ on: Bool) -> Bool {
         let svc = SMAppService.mainApp
         do {
-            switch svc.status {
-            case .enabled: try svc.unregister()
-            case .requiresApproval: SMAppService.openSystemSettingsLoginItems()
-            default:
+            if on {
                 try svc.register()
                 if svc.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            } else {
+                try svc.unregister()
             }
         } catch {
             let a = NSAlert(); a.messageText = "Couldn't change Start at Login"; a.informativeText = error.localizedDescription
             if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
             a.runModal()
         }
+        return svc.status == .enabled
     }
 }
 

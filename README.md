@@ -17,18 +17,21 @@ Weekly resets in 6d 7h (Wed 20:00)
 
 A line is added below only when something is wrong, such as an expired login.
 
-**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, a **Settings** submenu, and Quit.
+**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, **Settings…** (⌘,), and Quit.
 
-**Settings** holds toggles, not a window: Show Session Reset in Bar (`52% · 34% · 1h28m`), Mid-dot Separator, Show % Sign, Claude Orange (off: plain menu bar colour; hot limits stay red), Notify at 80% and 95%, and Start at Login.
+**Settings** is one small window where every change applies at once:
 
-Notifications are off until you turn them on (macOS asks permission the first time). Each limit then notifies once per window at 80% and at 95%, and you get a "Session reset" notice when a session you'd pushed past 80% resets.
+- **Menu bar**: show when the session resets (`52% · 34% · 1h28m`), the mid-dot between numbers, the % sign, and Claude orange (off: the menu bar's own colour; hot limits stay red), with a live preview.
+- **Notifications**: off until you turn them on (macOS asks permission the first time). Then each limit, Fable weekly included, has its own switch and its own percentages, `80, 95` by default; each notifies once per window. A separate switch sends "Session reset" when a session that passed its first percentage resets.
+- **General**: Start at login.
 
-That's all it does. Two Swift files, no dependencies, no Dock icon, no settings window.
+That's all it does. Three Swift files, no dependencies, no Dock icon.
 
 ## Requirements
 
 - macOS 13 Ventura or newer.
 - [Claude Code](https://claude.com/claude-code) installed and signed in with a Claude subscription (Pro, Max, Team). Limitbar uses its login. Enterprise accounts may get no usage data back.
+- Python 3 (for the optional status-line wrapper; macOS ships it with the command line tools).
 - Apple's command line tools for `swiftc`: `xcode-select --install` if `swiftc --version` fails.
 
 ## Install
@@ -39,7 +42,7 @@ cd limitbar
 ./build.sh
 ```
 
-This builds `~/Applications/Limitbar.app` and opens it. Click it and turn on **Start at Login**.
+This builds `~/Applications/Limitbar.app` and opens it. Click it, open **Settings…** and turn on **Start at login**.
 
 If you run a network filter such as Little Snitch or LuLu, allow **Limitbar** to connect to `api.anthropic.com` on port 443. Some filters silently drop new, self-built apps, which shows up as "Offline (The request timed out.)" in the menu, and after three timeouts in a row as "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar".
 
@@ -62,18 +65,18 @@ It fetches at launch, every 5 minutes, when you open the menu or wake the Mac if
 ## Limits of the approach
 
 - **The endpoint is undocumented.** Anthropic can change or remove it at any time; if the reply stops making sense the menu says so and the bar shows `—`.
-- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch. With the optional status-line wrapper below, Limitbar shows current numbers even while the token is expired, as long as a Claude Code session is open.
+- **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch. The optional status-line wrapper below can fill in while Limitbar's own request fails, with whatever your Claude Code sessions last reported.
 - **It only knows what the endpoint reports**: no token counts or history. The pace projection is a straight line from the window so far. For those, see [CodexBar](https://github.com/steipete/CodexBar) or the upstream project below.
 
 ## Optional: numbers from Claude Code's status line
 
-Claude Code passes your limits to custom status-line commands. `./build.sh` installs a small wrapper, `~/.local/bin/limitbar-statusline`, which copies just those numbers to `~/Library/Application Support/Limitbar/latest.json` and then runs your existing status line unchanged. Limitbar uses that file when its own request fails (most often an expired token), with no token or network. To turn it on, put the wrapper in front of your status line command in `~/.claude/settings.json`:
+Claude Code passes your limits to custom status-line commands. `./build.sh` installs a small wrapper (Python 3), `~/.local/bin/limitbar-statusline`, which copies just the session and weekly percentages and reset times to `~/Library/Application Support/Limitbar/latest.json`, then hands over to your existing status line, which runs exactly as before. When Limitbar's own request fails (an expired token, a rate-limit backoff), it uses those numbers, with no token or network. It merges them per window, so an idle session re-sending old numbers never replaces newer ones. To turn it on, wrap your status line command in `~/.claude/settings.json`, in single quotes:
 
 ```json
-"statusLine": { "type": "command", "command": "~/.local/bin/limitbar-statusline <your existing command>" }
+"statusLine": { "type": "command", "command": "~/.local/bin/limitbar-statusline 'your existing command'" }
 ```
 
-With no existing status line, use `~/.local/bin/limitbar-statusline` alone (it prints nothing).
+Pipes, `;`, `$(…)` and variables inside the quotes work as before. With no existing status line, use `~/.local/bin/limitbar-statusline` alone (it prints nothing).
 
 ## Privacy
 
@@ -86,7 +89,7 @@ The token is read into memory for each request and sent only to `api.anthropic.c
 LIMITBAR_OUT=.build ./build.sh    # build without installing or launching
 ```
 
-`Sources/Core.swift` is pure logic (parsing, countdowns, tooltip text, when to fetch) and is what the tests cover. `Sources/main.swift` is the AppKit shell: status item, Keychain read, network, timers, menu. The design is in [`docs/superpowers/specs/2026-11-12-limitbar-design.md`](docs/superpowers/specs/2026-11-12-limitbar-design.md); known issues and planned work are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
+`Sources/Core.swift` is pure logic (parsing, countdowns, tooltip text, when to fetch) and is what the tests cover. `Sources/main.swift` is the AppKit shell and `Sources/Settings.swift` the settings window: status item, Keychain read, network, timers, menu. The design is in [`docs/superpowers/specs/2026-11-12-limitbar-design.md`](docs/superpowers/specs/2026-11-12-limitbar-design.md); known issues and planned work are in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Credits
 
