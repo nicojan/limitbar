@@ -50,7 +50,8 @@ From the repo root, on a clean, pushed `main`.
    TAP="$(brew --repo nicojan/tap)"
    cp release/homebrew/limitbar.rb "$TAP/Casks/limitbar.rb"
    git -C "$TAP" add Casks/limitbar.rb && git -C "$TAP" commit -m "limitbar X.Y.Z" && git -C "$TAP" push
-   brew livecheck --cask nicojan/tap/limitbar    # must print X.Y.Z
+   brew livecheck --cask nicojan/tap/limitbar    # must print X.Y.Z (Homebrew may first want `brew trust --cask nicojan/tap/limitbar`)
+   brew style nicojan/tap
    ```
    If every `brew` command times out in `bundle install`, Little Snitch is dropping Homebrew's portable Ruby (see Chorus's notes); `ruby -c` the cask and check the hash by hand meanwhile.
 
