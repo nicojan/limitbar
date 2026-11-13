@@ -7,5 +7,5 @@ macOS menu bar app: Claude session and weekly limit percentages, reset countdown
 - Never refresh or write the `Claude Code-credentials` token. Rotating it signs Claude Code out.
 - The usage endpoint is undocumented. When its shape changes, capture a real reply (it holds no token, but check before committing), add it under `Tests/fixtures/`, and test against it.
 - Check: `./test.sh`, then `OUT=$PWD/.build ./build.sh`. Install: `./build.sh`.
-- Design and scope: `docs/superpowers/specs/2026-11-12-limitbar-design.md`. Non-goals there are deliberate: no token counting, no other providers, no settings window.
+- Known bugs, requested changes and feature ideas: `docs/BACKLOG.md` (read before starting work). Design and scope: `docs/superpowers/specs/2026-11-12-limitbar-design.md`. Non-goals there are deliberate: no token counting, no other providers, no settings window.
 - Little Snitch on this machine silently drops new ad-hoc-signed binaries ("Offline (The request timed out.)"). Allow Limitbar to api.anthropic.com:443 before debugging the network code.
