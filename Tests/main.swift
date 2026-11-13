@@ -218,5 +218,46 @@ check(firewallHint.contains("api.anthropic.com") && firewallHint.contains("Littl
 check(status(loginExpiredMessage, poll: polled).calm, "expired login is calm")
 check(!status("Usage service unavailable (500)", poll: polled).calm, "server error is a warning")
 
+// MARK: phase 5: pace
+func lim(_ k: Limit.Kind, _ p: Double, resetsIn: TimeInterval?, label: String? = nil) -> Limit {
+    Limit(kind: k, label: label ?? (k == .session ? "Session" : "Weekly"), percent: p, resetsAt: resetsIn.map { now.addingTimeInterval($0) }, elevated: false)
+}
+// Session: 5 h window, 3.5 h left -> 1.5 h (30%) elapsed. 52% used: ahead, 100% after 1.5 h * 100/52 = 2.885 h from window start.
+let ahead = pace(lim(.session, 52, resetsIn: 3.5 * 3600), now: now)
+check(ahead.map { Int($0.elapsed.rounded()) } == 30, "pace: elapsed share of the window")
+check(ahead?.ahead == true, "pace: 52% used at 30% elapsed is ahead")
+let expectedOut = now.addingTimeInterval(-1.5 * 3600 + 1.5 * 3600 * 100 / 52)
+check(ahead?.runsOutAt.map { abs($0.timeIntervalSince(expectedOut)) < 1 } == true, "pace: projected run-out time")
+check(ahead.map { norm(paceText($0, now: now, calendar: utc, locale: posix)) } == "52% used, 30% of window elapsed — ahead of pace, runs out ~5:15 AM", "pace text ahead: \(ahead.map { paceText($0, now: now, calendar: utc, locale: posix) } ?? "nil")")
+let behind = pace(lim(.weekly, 20, resetsIn: 3.5 * 86400), now: now)   // 7 d window, half elapsed
+check(behind?.ahead == false && behind?.runsOutAt == nil, "pace: 20% at 50% elapsed is within pace")
+check(behind.map { paceText($0, now: now, calendar: utc, locale: posix) } == "20% used, 50% of window elapsed — within pace", "pace text within")
+let weeklyAhead = pace(lim(.weekly, 60, resetsIn: 4 * 86400), now: now)!   // 3 of 7 days gone: 100% at day 5
+check(norm(paceText(weeklyAhead, now: now, calendar: utc, locale: posix)) == "60% used, 43% of window elapsed — ahead of pace, runs out ~Sun 3:52 AM", "pace text: another day shows the weekday: \(paceText(weeklyAhead, now: now, calendar: utc, locale: posix))")
+check(pace(lim(.session, 3, resetsIn: 4.9 * 3600), now: now) == nil, "pace: too early in the window to project")
+check(pace(lim(.session, 50, resetsIn: nil), now: now) == nil, "pace: no reset time")
+check(pace(lim(.session, 50, resetsIn: -60), now: now) == nil, "pace: window already reset")
+check(pace(lim(.session, 100, resetsIn: 3600), now: now)?.runsOutAt == nil, "pace: already at 100% has no projection")
+check(pace(lim(.scoped, 60, resetsIn: 3.5 * 86400, label: "Fable weekly"), now: now)?.ahead == true, "pace: scoped limits use the weekly window")
+
+// MARK: phase 5: notifications
+let at85 = [lim(.session, 85, resetsIn: 3600), lim(.weekly, 40, resetsIn: 86400)]
+let due85 = alertsDue(at85, now: now, sent: [])
+check(due85.map { $0.title } == ["Session at 80%"], "alert: crossing 80% notifies once: \(due85.map { $0.title })")
+check(due85.first?.body.hasPrefix("Session resets in 1h 0m") == true, "alert body says when it resets")
+check(alertsDue(at85, now: now, sent: Set(due85.flatMap { $0.keys })).isEmpty, "alert: not repeated in the same window")
+let at96 = [lim(.session, 96, resetsIn: 3600)]
+check(alertsDue(at96, now: now, sent: []).map { $0.title } == ["Session at 95%"], "alert: jumping past both thresholds sends only the higher")
+check(alertsDue(at96, now: now, sent: Set(due85.flatMap { $0.keys })).map { $0.title } == ["Session at 95%"], "alert: 95% after 80% in the same window")
+check(alertsDue([lim(.session, 85, resetsIn: 3600 + 5 * 3600)], now: now, sent: Set(due85.flatMap { $0.keys })).count == 1, "alert: a new window notifies again")
+check(alertsDue([lim(.weekly, 81, resetsIn: 86400, label: "Fable weekly")], now: now, sent: []).first?.title == "Fable weekly at 80%", "alert: scoped limits too")
+// Session reset: only for a session pushed past 80%, and only soon after the reset itself.
+check(alertsDue([lim(.session, 85, resetsIn: -30)], now: now, sent: []).map { $0.title } == ["Session reset"], "alert: session reset after 80%")
+check(alertsDue([lim(.session, 50, resetsIn: -30)], now: now, sent: []).isEmpty, "alert: no reset notice for a light session")
+check(alertsDue([lim(.session, 85, resetsIn: -2 * 3600)], now: now, sent: []).isEmpty, "alert: no reset notice for an old reset (e.g. after relaunch)")
+check(alertsDue([lim(.session, 85, resetsIn: nil)], now: now, sent: []).isEmpty, "alert: needs a reset time to know the window")
+let oldKey = "Session|80|\(Int(now.addingTimeInterval(-9 * 86400).timeIntervalSince1970))"
+check(pruneSent(Set(due85.flatMap { $0.keys }).union([oldKey]), now: now) == Set(due85.flatMap { $0.keys }), "alert keys for long-gone windows are pruned")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

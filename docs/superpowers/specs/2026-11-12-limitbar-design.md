@@ -15,9 +15,9 @@ A macOS menu bar tool that shows, at a glance, how much of the Claude session (5
 
 ## Non-goals
 
-- Token counting from local transcripts, per-model charts, cost estimates, forecasts.
+- Token counting from local transcripts, per-model charts, cost estimates, forecasts beyond the straight-line pace projection.
 - Other providers (Codex, Cursor, …).
-- Notifications, settings window, Dock icon.
+- Settings window, Dock icon. (Notifications were a non-goal until Nico asked for them on 2026-11-12; they are a single menu toggle, off by default.)
 - Signed/notarized release binaries. Build from source with one script.
 
 ## Anti-goals
@@ -62,7 +62,7 @@ Weekly resets in 6d 7h (Wed 20:00)
 
 Model-scoped limits appear only in the click menu. A status line is appended only when something is wrong.
 
-**Click menu** (rebuilt each time it opens, so countdowns are current):
+**Click menu** (rebuilt each time it opens and after every fetch, so countdowns are current):
 
 ```
 Session        52%   resets in 1h 28m (22:20)
@@ -79,6 +79,10 @@ Quit Limitbar               ⌘Q
 **Refresh cadence**: fetch at launch, then every 5 minutes; also on menu open or wake from sleep if the last attempt is over 60 s old; also once right after a reset time passes (compared with the last attempt, so a failing fetch never retries every tick). Title and tooltip re-render every 60 s from cached data. HTTP 429 doubles the interval (the doubling caps at 30 min; a longer `Retry-After` is honoured up to 6 h) and the backoff holds until a success; while backing off, menu-open and reset refetches are suppressed. A fetch that fails for want of a network (offline, DNS, timeout) retries after 15 s, 30 s and 60 s before returning to the 5-minute cadence; after wake the timer holds off for the 5 s grace period so the overdue tick can't fire into a dead network. Staleness is decided by the clock alone (`resets_at <= now`), so a reply that straddles a reset never shows the old number as current. The Keychain read runs `security` with a 15 s deadline: a dialog nobody answers is killed and polling pauses until Refresh, so a blocked read can't freeze fetching. Refresh supersedes any fetch still outstanding, and the title re-renders every tick regardless. Requests use an ephemeral `URLSession` (no cookies, no cache), a 10 s request and resource timeout, and refuse redirects so the bearer token can't follow one.
 
 **Errors**: no Keychain item → "No Claude Code login found"; Keychain access denied, or no answer within 15 s → polling pauses until a manual Refresh (no repeated dialogs); keychain locked (exit 36) → "Keychain is locked — unlock it, then click Refresh"; expired token or 401 → "Login expired — run Claude Code to renew"; 403 → "This login can't read usage (403)"; other → "Usage service unavailable (code)". Reset times more than a year out are rejected as garbage. The menu's "Updated" line is relative ("just now", "5 min ago", "2 h ago") and shows a weekday once the data is a day old. Times follow the system time zone live. Menu columns are sized to the widest label. Last good values stay in the bar, dimmed, with the reason in the menu. An expired login is routine (it lapses overnight), so its menu line is neutral, not a ⚠︎ warning. After 3 consecutive timeouts the menu says "Can't reach api.anthropic.com — check Little Snitch or your firewall allows Limitbar". except a limit whose reset time has passed: it shows `–` and "reset, waiting for new numbers", never an old number.
+
+**Pace** (menu only, session and weekly): used % against elapsed % of the window (session 5 h, weekly 7 d; elapsed = window − time to reset). When used is ahead of elapsed, the straight-line projection hits 100% before the reset, and the menu says when: "52% used, 30% of window elapsed — ahead of pace, runs out ~21:40" (weekday added when not today). Before 5% of the window has elapsed there is no projection. The bar itself stays two numbers.
+
+**Notifications** (menu toggle "Notify at 80% and 95%", off by default, `UNUserNotificationCenter`, permission asked when first turned on): each limit, scoped ones included, notifies once per window at 80% and at 95% (jumping past both sends only 95%); "Session reset" when a session that reached 80% resets, but only within an hour of the reset, so a relaunch doesn't announce an old one. Sent keys (`label|threshold|reset epoch`) persist in `UserDefaults` and are pruned after 8 days.
 
 **Start at Login**: `SMAppService.mainApp`; when macOS answers `.requiresApproval`, the item shows mixed state and opens Login Items settings.
 

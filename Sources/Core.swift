@@ -289,3 +289,78 @@ func keychainData(_ run: ToolRun) -> Result<Data, FetchFailure> {
     case let .exited(code, _): return .failure(FetchFailure("Keychain read failed (\(code))", .failure))
     }
 }
+
+// MARK: - pace
+
+/// Window lengths: the session limit is 5 hours, every weekly limit 7 days.
+func windowLength(_ k: Limit.Kind) -> TimeInterval { k == .session ? 5 * 3600 : 7 * 86400 }
+
+/// Used share of a limit against the elapsed share of its window. `runsOutAt` is set when, at the rate so far,
+/// the limit hits 100% before it resets: exactly the "ahead of pace" case.
+struct Pace: Equatable {
+    let used: Double      // percent
+    let elapsed: Double   // percent of the window
+    let runsOutAt: Date?
+    var ahead: Bool { runsOutAt != nil }
+}
+
+let paceMinElapsed = 5.0   // percent of the window: earlier than this, a projection is mostly noise
+
+func pace(_ l: Limit, now: Date) -> Pace? {
+    guard let reset = l.resetsAt, reset > now else { return nil }
+    let length = windowLength(l.kind)
+    let elapsed = length - min(reset.timeIntervalSince(now), length)
+    let elapsedPct = elapsed / length * 100
+    guard elapsedPct >= paceMinElapsed else { return nil }
+    guard l.percent > elapsedPct, l.percent < 100 else { return Pace(used: l.percent, elapsed: elapsedPct, runsOutAt: nil) }
+    let full = elapsed * 100 / l.percent   // seconds from window start to 100% at the rate so far
+    return Pace(used: l.percent, elapsed: elapsedPct, runsOutAt: now.addingTimeInterval(full - elapsed))
+}
+
+/// "52% used, 30% of window elapsed — ahead of pace, runs out ~21:40" or "… — within pace".
+/// The run-out time carries a weekday when it isn't today, as countdowns do.
+func paceText(_ p: Pace, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String {
+    let head = "\(pct(p.used)) used, \(pct(p.elapsed)) of window elapsed — "
+    guard let out = p.runsOutAt else { return head + "within pace" }
+    let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = locale
+    f.setLocalizedDateFormatFromTemplate(calendar.isDate(out, inSameDayAs: now) ? "jj:mm" : "EEE jj:mm")
+    return head + "ahead of pace, runs out ~\(f.string(from: out))"
+}
+
+// MARK: - notifications
+
+struct Alert: Equatable {
+    let keys: [String]   // what to record as sent; one per threshold covered, so 95% doesn't also fire 80%
+    let title: String
+    let body: String
+}
+
+let alertThresholds: [Double] = [80, 95]
+let resetAlertWithin: TimeInterval = 3600   // a reset older than this (say, seen at relaunch) isn't news
+
+/// Notifications due now: each limit at 80% and 95%, once per window (the key carries the reset time), and
+/// "Session reset" when a session pushed past 80% resets. `sent` holds the keys already delivered.
+func alertsDue(_ limits: [Limit], now: Date, sent: Set<String>) -> [Alert] {
+    limits.compactMap { l -> Alert? in
+        guard let reset = l.resetsAt else { return nil }
+        let window = Int(reset.timeIntervalSince1970)
+        if l.isStale(now: now) {
+            let key = "\(l.label)|reset|\(window)"
+            guard l.kind == .session, l.percent >= alertThresholds[0], now.timeIntervalSince(reset) <= resetAlertWithin,
+                  !sent.contains(key) else { return nil }
+            return Alert(keys: [key], title: "Session reset", body: "Your 5-hour session limit is fresh again.")
+        }
+        let crossed = alertThresholds.filter { l.percent >= $0 }
+        let keys = crossed.map { "\(l.label)|\(Int($0))|\(window)" }
+        guard let top = crossed.last, let topKey = keys.last, !sent.contains(topKey) else { return nil }
+        return Alert(keys: keys, title: "\(l.label) at \(Int(top))%", body: "\(l.label) \(countdown(to: reset, now: now))")
+    }
+}
+
+/// Drops keys for windows that reset over 8 days ago, so the stored set stays small.
+func pruneSent(_ sent: Set<String>, now: Date) -> Set<String> {
+    sent.filter { key in
+        guard let epoch = key.split(separator: "|").last.flatMap({ Double($0) }) else { return false }
+        return Date(timeIntervalSince1970: epoch) > now.addingTimeInterval(-8 * 86400)
+    }
+}

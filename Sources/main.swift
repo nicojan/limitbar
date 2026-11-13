@@ -1,6 +1,7 @@
 import Cocoa
 import Security
 import ServiceManagement
+import UserNotifications
 
 // Limitbar: Claude session and weekly limits in the menu bar.
 // Reads the token Claude Code keeps in the login Keychain (read-only: it never refreshes or writes it,
@@ -111,7 +112,58 @@ private func request(token: String, plan: String, _ done: @escaping (FetchResult
 
 // MARK: - App
 
+// MARK: - Notifications
+
+/// At 80% / 95% per limit and on a session reset, when turned on in the menu. Off by default; permission is
+/// asked the first time it's turned on. Sent keys persist, so a relaunch doesn't repeat a notification.
+final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    private let defaults = UserDefaults.standard
+    private let enabledKey = "notificationsEnabled", sentKey = "sentAlerts"
+    var enabled: Bool { defaults.bool(forKey: enabledKey) }
+
+    override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+    }
+
+    /// Turning on asks for permission; if macOS refuses, it stays off and says where to allow it.
+    func toggle(_ done: @escaping () -> Void) {
+        guard !enabled else { defaults.set(false, forKey: enabledKey); done(); return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            DispatchQueue.main.async {
+                self.defaults.set(granted, forKey: self.enabledKey)
+                if !granted {
+                    let a = NSAlert(); a.messageText = "Notifications are off for Limitbar"
+                    a.informativeText = "Allow them in System Settings → Notifications → Limitbar, then turn them on here again."
+                    if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+                    a.runModal()
+                }
+                done()
+            }
+        }
+    }
+
+    func check(_ limits: [Limit], now: Date = Date()) {
+        guard enabled else { return }
+        let sent = Set(defaults.stringArray(forKey: sentKey) ?? [])
+        let due = alertsDue(limits, now: now, sent: sent)
+        guard !due.isEmpty else { return }
+        defaults.set(Array(pruneSent(sent.union(due.flatMap { $0.keys }), now: now)), forKey: sentKey)
+        for alert in due {
+            let c = UNMutableNotificationContent(); c.title = alert.title; c.body = alert.body; c.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: alert.keys.last ?? alert.title, content: c, trigger: nil))
+        }
+    }
+
+    // A menu bar app counts as frontmost; show banners anyway.
+    func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) { done([.banner, .sound]) }
+}
+
+// MARK: - App
+
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    let notifier = Notifier()
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
     var limits: [Limit] = []
@@ -146,6 +198,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Always re-renders, so countdowns and reset windows stay current even while a fetch is outstanding.
     func onTick() {
+        notifier.check(limits)   // also catches a session reset on the clock, before new numbers replace it
         if shouldFetch(poll, limits: limits, now: Date()) { fetch() }
         render()
     }
@@ -175,6 +228,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.inFlight = false
             switch result {
             case let .limits(l, p):
+                self.notifier.check(self.limits)   // a reset the old numbers show, then the new numbers
+                self.notifier.check(l)
                 self.limits = l; self.plan = p; self.error = nil; self.fetchedAt = Date()
                 self.poll = nextState(self.poll, after: .success)
             case let .failure(msg, outcome):
@@ -246,6 +301,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             mi.attributedTitle = row; mi.isEnabled = false
             menu.addItem(mi)
         }
+        // Pace for session and weekly: used share against elapsed share of the window.
+        let paced = [Limit.Kind.session, .weekly].compactMap { k in limits.first { $0.kind == k } }
+            .compactMap { l in pace(l, now: now).map { (l.label, $0) } }
+        if !paced.isEmpty { menu.addItem(.separator()) }
+        for (label, p) in paced {
+            let mi = info("\(label): \(paceText(p, now: now))")
+            mi.attributedTitle = NSAttributedString(string: mi.title, attributes: [.font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: p.ahead ? NSColor.labelColor : NSColor.secondaryLabelColor])
+            menu.addItem(mi)
+        }
         if !limits.isEmpty { menu.addItem(.separator()) }
 
         let when = fetchedAt == .distantPast ? (inFlight ? "Loading…" : "Not loaded yet") : updatedText(fetchedAt, now: now)
@@ -263,6 +328,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default: login.state = .off
         }
         menu.addItem(login)
+        let notify = action("Notify at 80% and 95%", #selector(toggleNotifications))
+        notify.state = notifier.enabled ? .on : .off
+        menu.addItem(notify)
         menu.addItem(.separator())
         menu.addItem(action("Quit Limitbar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
     }
@@ -273,6 +341,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func action(_ title: String, _ sel: Selector, key: String = "", target: AnyObject? = nil) -> NSMenuItem {
         let mi = NSMenuItem(title: title, action: sel, keyEquivalent: key); mi.target = target ?? self; return mi
     }
+
+    @objc func toggleNotifications() { notifier.toggle { [weak self] in self?.rebuildMenu(); self?.notifier.check(self?.limits ?? []) } }
 
     @objc func openPage() { NSWorkspace.shared.open(Config.usagePage) }
 
@@ -304,6 +374,7 @@ if CommandLine.arguments.contains("--once") {
             let (s, w) = barParts(l)
             print("bar: \(s.map { pct($0.percent) } ?? "–") · \(w.map { pct($0.percent) } ?? "–")   plan: \(p)")
             l.forEach { print(describe($0)) }   // every limit, as the click menu lists them
+            l.filter { $0.kind != .scoped }.forEach { x in pace(x, now: Date()).map { print("\(x.label): \(paceText($0))") } }
             exit(0)
         case let .failure(msg, _): print("error: \(msg)"); exit(1)
         }

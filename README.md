@@ -17,9 +17,11 @@ Weekly resets in 6d 7h (Wed 20:00)
 
 A line is added below only when something is wrong, such as an expired login.
 
-**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown, when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, Start at Login, and Quit.
+**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown; your pace for session and weekly ("52% used, 30% of window elapsed — ahead of pace, runs out ~21:40"); when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, Start at Login, **Notify at 80% and 95%**, and Quit.
 
-That's all it does. Two Swift files, about 450 lines, no dependencies, no Dock icon, no settings window.
+Notifications are off until you turn them on (macOS asks permission the first time). Each limit then notifies once per window at 80% and at 95%, and you get a "Session reset" notice when a session you'd pushed past 80% resets.
+
+That's all it does. Two Swift files, no dependencies, no Dock icon, no settings window.
 
 ## Requirements
 
@@ -59,7 +61,7 @@ It fetches at launch, every 5 minutes, when you open the menu or wake the Mac if
 
 - **The endpoint is undocumented.** Anthropic can change or remove it at any time; if the reply stops making sense the menu says so and the bar shows `—`.
 - **The token expires a few hours after Claude Code last ran.** Limitbar then shows your last numbers dimmed, with a calm "Login expired — run Claude Code to renew" in the menu (a limit whose window has reset since shows `–` rather than an old number). Running any Claude Code command renews it, and Limitbar picks it up on its next fetch.
-- **It only knows what the endpoint reports**: no token counts, history or forecasts. For those, see [CodexBar](https://github.com/steipete/CodexBar) or the upstream project below.
+- **It only knows what the endpoint reports**: no token counts or history. The pace projection is a straight line from the window so far. For those, see [CodexBar](https://github.com/steipete/CodexBar) or the upstream project below.
 
 ## Privacy
 
