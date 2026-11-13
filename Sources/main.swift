@@ -13,6 +13,7 @@ enum Config {
     static let tick: TimeInterval = 60      // re-render countdowns, check whether a fetch is due
     static let timeout: TimeInterval = 10
     static let wakeDelay: TimeInterval = 5  // let the network come back after sleep
+    static let orange = NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: 1)  // Claude orange #D97757
 }
 
 // MARK: - Keychain + network
@@ -195,7 +196,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let (s, w) = barParts(limits, fetchedAt: fetchedAt, now: now)
         let title = NSMutableAttributedString()
         func add(_ text: String, hot: Bool = false) {
-            title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: hot ? NSColor.systemRed : NSColor.labelColor]))
+            title.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: hot ? NSColor.systemRed : Config.orange]))
         }
         if limits.isEmpty {
             add(error == nil ? "…" : "—")
@@ -292,7 +293,7 @@ if CommandLine.arguments.contains("--once") {
         case let .limits(l, p):
             let (s, w) = barParts(l, fetchedAt: Date())
             print("bar: \(s.map { pct($0.percent) } ?? "–") · \(w.map { pct($0.percent) } ?? "–")   plan: \(p)")
-            print(tooltip(l, fetchedAt: Date(), status: nil))
+            l.forEach { print(describe($0, fetchedAt: Date())) }   // every limit, as the click menu lists them
             exit(0)
         case let .failure(msg, _): print("error: \(msg)"); exit(1)
         }

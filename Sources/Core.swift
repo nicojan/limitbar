@@ -118,8 +118,14 @@ func barParts(_ limits: [Limit], fetchedAt: Date, now: Date = Date()) -> (sessio
     return (current(.session), current(.weekly))
 }
 
+/// Hover text: when session and weekly reset, no percentages (the bar has them). Model-scoped limits are
+/// left to the click menu. `status` is appended only when something is wrong.
 func tooltip(_ limits: [Limit], fetchedAt: Date, now: Date = Date(), status: String?) -> String {
-    let lines = limits.map { describe($0, fetchedAt: fetchedAt, now: now) } + [status].compactMap { $0 }
+    let main = [Limit.Kind.session, .weekly].compactMap { k in limits.first { $0.kind == k } }
+    let lines = main.map { l -> String in
+        if l.isStale(fetchedAt: fetchedAt, now: now) { return "\(l.label) reset, waiting for new numbers" }
+        return l.resetsAt.map { "\(l.label) \(countdown(to: $0, now: now))" } ?? "\(l.label): no reset time"
+    } + [status].compactMap { $0 }
     return lines.isEmpty ? "Limitbar" : lines.joined(separator: "\n")
 }
 

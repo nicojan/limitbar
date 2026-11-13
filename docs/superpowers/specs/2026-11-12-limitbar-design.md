@@ -9,8 +9,8 @@ A macOS menu bar tool that shows, at a glance, how much of the Claude session (5
 ## Goals
 
 - Menu bar shows the two numbers that matter, always visible: `52% · 34%` (session · weekly).
-- Hover shows every limit with its reset countdown and local reset time.
-- Click opens a native menu with the same rows plus Refresh, Start at Login, Quit.
+- Hover shows when the session and weekly limits reset (countdown and local time).
+- Click opens a native menu with every limit (percent and reset) plus Refresh, Start at Login, Quit.
 - Uses the login Claude Code already keeps; no separate sign-in, no stored secrets of its own.
 
 ## Non-goals
@@ -51,15 +51,16 @@ Picked 1: Nico chose the recommendation.
 - `Tests/main.swift` — plain assertion runner compiled with `Core.swift`; `./test.sh` runs it.
 - `build.sh` — compiles, bundles `Limitbar.app`, ad-hoc signs, installs to `~/Applications`, relaunches.
 
-**Menu bar title**: `S% · W%` in monospaced digits (session · weekly-all). A number at ≥90% or with non-`normal` severity is tinted red. No data yet: `…`; no data at all because of an error: `—`.
+**Menu bar title**: `S% · W%` in monospaced digits (session · weekly-all), in Claude orange (`#D97757`). A number at ≥90% or with non-`normal` severity is red. No data yet: `…`; no data at all because of an error: `—`.
 
-**Tooltip** (one line per limit, local time):
+**Tooltip** (reset times only, local time; the percentages are already in the bar):
 
 ```
-Session 52% · resets in 1h 28m (22:20)
-Weekly 34% · resets in 6d 7h (Wed 20:00)
-Fable weekly 0% · resets in 6d 7h (Wed 20:00)
+Session resets in 1h 28m (22:20)
+Weekly resets in 6d 7h (Wed 20:00)
 ```
+
+Model-scoped limits appear only in the click menu. A status line is appended only when something is wrong.
 
 **Click menu** (rebuilt each time it opens, so countdowns are current):
 

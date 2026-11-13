@@ -85,11 +85,20 @@ check(barParts(real, fetchedAt: fetched, now: afterReset).session == nil, "bar h
 check(barParts(real, fetchedAt: fetched, now: afterReset).weekly?.percent == 34, "bar keeps a live weekly")
 check(barParts([], fetchedAt: fetched).session == nil, "bar parts empty")
 
-let tip = tooltip(real, fetchedAt: fetched, now: now, status: "Login expired")
-check(tip.split(separator: "\n").count == 4, "tooltip: one line per limit + status")
-check(tip.hasPrefix("Session 52% · resets in "), "tooltip first line: \(tip)")
-check(tooltip(real, fetchedAt: fetched, now: afterReset, status: nil).hasPrefix("Session – · reset"), "tooltip marks reset session")
+// Tooltip: reset times for session and weekly only, no percentages; scoped limits live in the menu.
+let tip = tooltip(real, fetchedAt: fetched, now: now, status: nil)
+let tipLines = tip.split(separator: "\n").map(String.init)
+check(tipLines.count == 2, "tooltip: session and weekly only: \(tip)")
+check(tipLines.first?.hasPrefix("Session resets in 1h 28m (") == true, "tooltip session line: \(tip)")
+check(tipLines.last?.hasPrefix("Weekly resets in 5d 23h (") == true, "tooltip weekly line: \(tip)")
+check(!tip.contains("%"), "tooltip has no percentages")
+check(!tip.contains("Fable"), "tooltip leaves scoped limits to the menu")
+check(tooltip(real, fetchedAt: fetched, now: now, status: "Login expired").split(separator: "\n").last == "Login expired", "tooltip appends status")
+check(tooltip(real, fetchedAt: fetched, now: afterReset, status: nil).hasPrefix("Session reset, waiting for new numbers"), "tooltip marks reset session")
 check(tooltip([], fetchedAt: fetched, status: nil) == "Limitbar", "tooltip empty")
+check(tooltip([], fetchedAt: fetched, status: "Offline") == "Offline", "tooltip status only")
+let noReset = parseUsage(json(#"{"limits":[{"kind":"session","percent":5,"resets_at":null}]}"#))
+check(tooltip(noReset, fetchedAt: fetched, now: now, status: nil) == "Session: no reset time", "tooltip without reset time")
 
 // MARK: scheduling
 let t0 = now

@@ -1,18 +1,6 @@
 # Limitbar backlog
 
-From a code review on 2026-11-12 (independent bug hunt plus a UX/feature pass) and Nico's follow-up requests. Nothing here is fixed yet as of `f5fb9f5`. Line numbers refer to that commit.
-
-## Requested changes (Nico, 2026-11-12)
-
-- **Claude orange text.** Menu bar numbers in Claude orange (`#D97757`, the colour upstream used: RGB 0.85 / 0.47 / 0.34) instead of the label colour. Hot limits (≥90% or non-normal severity) stay red. Because orange is now the normal colour, the "amber at 75%" idea below is dropped.
-- **Tooltip shows reset times only.** Hover gives the time until reset for session and weekly, no percentages (they're already in the bar). Target:
-
-  ```
-  Session resets in 1h 28m (22:20)
-  Weekly resets in 6d 7h (Wed 20:00)
-  ```
-
-  Model-scoped limits (e.g. Fable weekly) move to the click menu only. A status line is appended only when something is wrong (e.g. "Login expired — run Claude Code to renew").
+From a code review on 2026-11-12 (independent bug hunt plus a UX/feature pass) and Nico's follow-up requests. Line numbers refer to `f5fb9f5` and drift as items are fixed. Fixed items are deleted.
 
 ## Bugs
 

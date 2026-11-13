@@ -6,17 +6,18 @@ Your Claude session and weekly limits, always visible in the macOS menu bar.
 52% · 34%
 ```
 
-The first number is your 5-hour session limit, the second your weekly limit. A number turns red at 90% or when Claude flags the limit.
+The first number is your 5-hour session limit, the second your weekly limit, in Claude orange. A number turns red at 90% or when Claude flags the limit.
 
-**Hover** for every limit with its reset countdown:
+**Hover** for when they reset:
 
 ```
-Session 52% · resets in 1h 28m (22:20)
-Weekly 34% · resets in 6d 7h (Wed 20:00)
-Fable weekly 0% · resets in 6d 7h (Wed 20:00)
+Session resets in 1h 28m (22:20)
+Weekly resets in 6d 7h (Wed 20:00)
 ```
 
-**Click** for the same rows, when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, Start at Login, and Quit.
+A line is added below only when something is wrong, such as an expired login.
+
+**Click** for every limit, including model-scoped ones such as Fable weekly, with its percentage and reset countdown, when the numbers were last updated, Refresh (⌘R), a link to Claude's usage page, Start at Login, and Quit.
 
 That's all it does. Two Swift files, about 450 lines, no dependencies, no Dock icon, no settings window.
 
